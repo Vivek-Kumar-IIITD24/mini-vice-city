@@ -1,0 +1,6 @@
+{
+  "name": "MINI VICE CITY",
+  "description": "A cinematic 3D open-world urban action and driving game set in a sunlit coastal metropolis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
