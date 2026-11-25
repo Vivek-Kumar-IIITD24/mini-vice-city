@@ -67,8 +67,9 @@ function smoothWindow(value: number, center: number, halfWidth: number): number 
  * - Low quality: disables EffectComposer and uses direct renderer.render(scene, camera) fallback.
  * - Medium quality: enables EffectComposer with half-resolution selective HDR bloom and colour grading.
  * - High quality: enables EffectComposer with high-resolution selective HDR bloom and colour grading.
- * - When isSoftwareGl is true on Medium/High, bloom resolution scale is kept compact so software WebGL
- *   remains responsive while preserving selective bloom and colour grading.
+ * - When isSoftwareGl is true on Medium/High, expensive multi-pass UnrealBloomPass is disabled
+ *   (bloomEnabled: false) and a lightweight single-pass selective HDR bloom kernel runs inside
+ *   CinematicGradeShader so Software WebGL stays fast without CPU frame stalls.
  */
 export function getPostProcessingConfigForQuality(
   quality: GraphicsQuality,
@@ -89,8 +90,8 @@ export function getPostProcessingConfigForQuality(
   if (quality === GraphicsQuality.Medium) {
     return {
       enabled: true,
-      bloomEnabled: true,
-      bloomResolutionScale: isSoftwareGl ? 0.3 : 0.5,
+      bloomEnabled: !isSoftwareGl,
+      bloomResolutionScale: isSoftwareGl ? 0 : 0.5,
       bloomStrengthMultiplier: 0.85,
       bloomRadius: 0.34,
       bloomThresholdOffset: 0.04,
@@ -101,8 +102,8 @@ export function getPostProcessingConfigForQuality(
   // GraphicsQuality.High
   return {
     enabled: true,
-    bloomEnabled: true,
-    bloomResolutionScale: isSoftwareGl ? 0.38 : 0.75,
+    bloomEnabled: !isSoftwareGl,
+    bloomResolutionScale: isSoftwareGl ? 0 : 0.75,
     bloomStrengthMultiplier: 1.0,
     bloomRadius: 0.42,
     bloomThresholdOffset: 0.0,
@@ -306,6 +307,9 @@ export const CinematicGradeShader = {
     uHighlightTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
     uVignetteStrength: { value: 0.16 },
     uGrainStrength: { value: 0.01 },
+    uTexelSize: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+    uBloomThreshold: { value: 1.15 },
+    uLightweightBloomStrength: { value: 0.0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -325,6 +329,9 @@ export const CinematicGradeShader = {
     uniform vec3 uHighlightTint;
     uniform float uVignetteStrength;
     uniform float uGrainStrength;
+    uniform vec2 uTexelSize;
+    uniform float uBloomThreshold;
+    uniform float uLightweightBloomStrength;
     varying vec2 vUv;
 
     float hash12(vec2 p) {
@@ -336,6 +343,30 @@ export const CinematicGradeShader = {
     void main() {
       vec4 texel = texture2D(tDiffuse, vUv);
       vec3 col = max(texel.rgb, vec3(0.0));
+
+      // Lightweight single-pass selective HDR bloom halo when multi-pass UnrealBloomPass is bypassed on Software WebGL
+      if (uLightweightBloomStrength > 0.001) {
+        vec3 hdrAccum = vec3(0.0);
+        vec2 step1 = uTexelSize * 2.5;
+        vec2 step2 = uTexelSize * 6.0;
+        vec2 offsets[8];
+        offsets[0] = vec2(step1.x, 0.0);
+        offsets[1] = vec2(-step1.x, 0.0);
+        offsets[2] = vec2(0.0, step1.y);
+        offsets[3] = vec2(0.0, -step1.y);
+        offsets[4] = vec2(step2.x, step2.y);
+        offsets[5] = vec2(-step2.x, step2.y);
+        offsets[6] = vec2(step2.x, -step2.y);
+        offsets[7] = vec2(-step2.x, -step2.y);
+        for (int i = 0; i < 8; i++) {
+          vec3 s = max(texture2D(tDiffuse, vUv + offsets[i]).rgb, vec3(0.0));
+          float sLuma = dot(s, vec3(0.2126, 0.7152, 0.0722));
+          float excess = max(0.0, sLuma - uBloomThreshold);
+          float w = excess / (sLuma + 0.001);
+          hdrAccum += s * w;
+        }
+        col += (hdrAccum * 0.125) * uLightweightBloomStrength;
+      }
 
       // Gentle highlight shoulder compression for ultra-bright HDR emitters so neon/police cores retain hue
       vec3 compressed = col / (1.0 + max(col - vec3(1.35), vec3(0.0)) * 0.22);
@@ -410,6 +441,7 @@ export class CinematicPostPipeline {
   private height = 1;
   private pixelRatio = 1;
   private elapsedTime = 0;
+  private currentExposure: number | null = null;
   private composerFailed = false;
 
   constructor(
@@ -448,29 +480,37 @@ export class CinematicPostPipeline {
     }
   }
 
+  private getEffectiveComposerPixelRatio(): number {
+    return this.isSoftwareGl ? Math.min(this.pixelRatio, 0.5) : this.pixelRatio;
+  }
+
   private initComposer(): void {
     if (this.composer || this.composerFailed) return;
     try {
+      const effPr = this.getEffectiveComposerPixelRatio();
       const composer = new EffectComposer(this.renderer);
-      composer.setPixelRatio(this.pixelRatio);
+      composer.setPixelRatio(effPr);
       composer.setSize(this.width, this.height);
 
       const renderPass = new RenderPass(this.scene, this.camera);
       composer.addPass(renderPass);
 
-      const bloomScale = Math.max(0.25, this.config.bloomResolutionScale || 0.5);
-      const bloomRes = new THREE.Vector2(
-        Math.max(64, Math.floor(this.width * this.pixelRatio * bloomScale)),
-        Math.max(64, Math.floor(this.height * this.pixelRatio * bloomScale))
-      );
-      const bloomPass = new UnrealBloomPass(
-        bloomRes,
-        this.lastState.bloomStrength,
-        this.lastState.bloomRadius,
-        this.lastState.bloomThreshold
-      );
-      bloomPass.enabled = this.config.bloomEnabled;
-      composer.addPass(bloomPass);
+      let bloomPass: UnrealBloomPass | null = null;
+      if (!this.isSoftwareGl) {
+        const bloomScale = Math.max(0.25, this.config.bloomResolutionScale || 0.5);
+        const bloomRes = new THREE.Vector2(
+          Math.max(64, Math.floor(this.width * effPr * bloomScale)),
+          Math.max(64, Math.floor(this.height * effPr * bloomScale))
+        );
+        bloomPass = new UnrealBloomPass(
+          bloomRes,
+          this.lastState.bloomStrength,
+          this.lastState.bloomRadius,
+          this.lastState.bloomThreshold
+        );
+        bloomPass.enabled = this.config.bloomEnabled;
+        composer.addPass(bloomPass);
+      }
 
       const gradePass = new ShaderPass(CinematicGradeShader);
       gradePass.enabled = this.config.gradeEnabled;
@@ -498,6 +538,8 @@ export class CinematicPostPipeline {
     this.config = nextConfig;
 
     if (!nextConfig.enabled) {
+      // Release EffectComposer and bloom mip-chain render targets immediately on Low quality
+      this.disposeComposerOnly();
       return;
     }
 
@@ -505,13 +547,14 @@ export class CinematicPostPipeline {
       this.initComposer();
     }
 
+    const effPr = this.getEffectiveComposerPixelRatio();
     if (this.bloomPass) {
       this.bloomPass.enabled = nextConfig.bloomEnabled;
-      if (qualityChanged) {
+      if (qualityChanged && nextConfig.bloomEnabled) {
         const bloomScale = Math.max(0.25, nextConfig.bloomResolutionScale || 0.5);
         this.bloomPass.setSize(
-          Math.max(64, Math.floor(this.width * this.pixelRatio * bloomScale)),
-          Math.max(64, Math.floor(this.height * this.pixelRatio * bloomScale))
+          Math.max(64, Math.floor(this.width * effPr * bloomScale)),
+          Math.max(64, Math.floor(this.height * effPr * bloomScale))
         );
       }
     }
@@ -532,28 +575,36 @@ export class CinematicPostPipeline {
     this.width = w;
     this.height = h;
     this.pixelRatio = pr;
+    const effPr = this.getEffectiveComposerPixelRatio();
 
     if (this.composer) {
-      this.composer.setPixelRatio(pr);
+      this.composer.setPixelRatio(effPr);
       this.composer.setSize(w, h);
     }
     if (this.bloomPass && this.config.bloomEnabled) {
       const bloomScale = Math.max(0.25, this.config.bloomResolutionScale || 0.5);
       this.bloomPass.setSize(
-        Math.max(64, Math.floor(w * pr * bloomScale)),
-        Math.max(64, Math.floor(h * pr * bloomScale))
+        Math.max(64, Math.floor(w * effPr * bloomScale)),
+        Math.max(64, Math.floor(h * effPr * bloomScale))
       );
     }
   }
 
   public update(dt: number, input: CinematicAtmosphereInput): CinematicPostState {
-    this.elapsedTime = (this.elapsedTime + Math.max(0, dt)) % 1000;
+    const safeDt = Math.max(0, Math.min(dt, 0.25));
+    this.elapsedTime = (this.elapsedTime + safeDt) % 1000;
     const state = computeCinematicPostState(input, this.config);
     this.lastState = state;
 
-    // Synchronize renderer toneMappingExposure so both EffectComposer (OutputPass)
-    // and direct fallback rendering share the exact same exposure curve.
-    this.renderer.toneMappingExposure = state.exposure;
+    // Smoothly adapt renderer toneMappingExposure so rapid Day<->Night / Clear<->Rain switches never flash,
+    // while keeping EffectComposer (OutputPass) and direct Low-quality rendering on the exact same curve.
+    if (this.currentExposure === null || safeDt === 0) {
+      this.currentExposure = state.exposure;
+    } else {
+      const expAlpha = 1 - Math.exp(-5.0 * safeDt);
+      this.currentExposure = lerp(this.currentExposure, state.exposure, expAlpha);
+    }
+    this.renderer.toneMappingExposure = this.currentExposure;
 
     if (!this.config.enabled || !this.composer) {
       return state;
@@ -568,6 +619,7 @@ export class CinematicPostPipeline {
 
     if (this.gradePass) {
       this.gradePass.enabled = this.config.gradeEnabled;
+      const effPr = this.getEffectiveComposerPixelRatio();
       const u = this.gradePass.uniforms;
       u.uTime.value = this.elapsedTime;
       u.uContrast.value = state.contrast;
@@ -586,6 +638,18 @@ export class CinematicPostPipeline {
       );
       u.uVignetteStrength.value = state.vignetteStrength;
       u.uGrainStrength.value = state.grainStrength;
+      (u.uTexelSize.value as THREE.Vector2).set(
+        1 / Math.max(1, this.width * effPr),
+        1 / Math.max(1, this.height * effPr)
+      );
+      u.uBloomThreshold.value = state.bloomThreshold;
+      // When multi-pass UnrealBloomPass is disabled on Software WebGL, apply lightweight single-pass selective HDR bloom
+      const lwBloom =
+        this.isSoftwareGl && this.config.enabled
+          ? (0.18 + input.nightFactor * 0.34 + input.rainAmount * 0.1) *
+            this.config.bloomStrengthMultiplier
+          : 0.0;
+      u.uLightweightBloomStrength.value = lwBloom;
     }
 
     return state;

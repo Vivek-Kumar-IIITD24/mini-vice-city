@@ -115,6 +115,7 @@ export class WorldEffectsAndMarkers {
       arrowMat,
       pGeo,
       pMat,
+      this.particleInst,
     );
   }
 

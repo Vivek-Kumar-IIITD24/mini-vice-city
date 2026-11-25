@@ -26,6 +26,7 @@ export interface WetRoadSurface<T extends WetRoadMaterialLike = WetRoadMaterialL
   readonly dryColorG?: number;
   readonly dryColorB?: number;
   readonly wetColorScale: number;
+  readonly wetnessUniform?: { value: number };
 }
 
 const WET_PRESETS: Record<
@@ -40,15 +41,15 @@ const WET_PRESETS: Record<
 > = {
   asphalt: {
     wetRoughness: 0.22,
-    wetMetalness: 0.36,
-    wetEnvMapIntensity: 1.65,
-    bumpWetMultiplier: 0.35,
-    wetColorScale: 0.78,
+    wetMetalness: 0.38,
+    wetEnvMapIntensity: 2.45,
+    bumpWetMultiplier: 0.3,
+    wetColorScale: 0.76,
   },
   marking: {
     wetRoughness: 0.28,
     wetMetalness: 0.14,
-    wetEnvMapIntensity: 1.4,
+    wetEnvMapIntensity: 1.55,
     bumpWetMultiplier: 0.5,
     wetColorScale: 0.9,
   },
@@ -62,6 +63,7 @@ export function createWetRoadSurface<T extends WetRoadMaterialLike>(
   id: string,
   material: T,
   kind: WetRoadSurfaceKind = 'asphalt',
+  wetnessUniform?: { value: number },
 ): WetRoadSurface<T> {
   const preset = WET_PRESETS[kind];
   const dryEnvMapIntensity =
@@ -85,6 +87,7 @@ export function createWetRoadSurface<T extends WetRoadMaterialLike>(
     dryColorG: hasColor ? material.color!.g : undefined,
     dryColorB: hasColor ? material.color!.b : undefined,
     wetColorScale: preset.wetColorScale,
+    wetnessUniform,
   };
 }
 
@@ -149,6 +152,10 @@ export function applyRoadWetness(
       m.color.r = s.dryColorR * colorScale;
       m.color.g = s.dryColorG * colorScale;
       m.color.b = s.dryColorB * colorScale;
+    }
+
+    if (s.wetnessUniform) {
+      s.wetnessUniform.value = w;
     }
   }
 }

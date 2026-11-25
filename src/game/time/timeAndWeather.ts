@@ -20,6 +20,10 @@ import {
   SKY_DOME_VERTEX_SHADER,
   stepCloudAtmosphereState,
 } from './skyClouds';
+import {
+  computeEnvironmentIntensity,
+  EnvironmentAtmosphereSnapshot,
+} from '../rendering/environmentReflections';
 
 interface SkyPalette {
   skyTop: THREE.Color;
@@ -177,11 +181,29 @@ export class TimeAndWeatherSystem {
   private weatherChangeTimer = 90;
   private readonly scene: THREE.Scene;
   private readonly isSoftwareGl: boolean;
+  private currentQuality: GraphicsQuality = GraphicsQuality.High;
   private shadowConfig: ShadowQualityConfig;
   private cloudQuality: CloudQualityConfig;
   private cloudState: CloudAtmosphereState;
   private shadowLeadX = 0;
   private shadowLeadZ = 0;
+
+  // Reusable zero-allocation snapshot fed into DynamicEnvironmentSystem
+  private readonly envSnapshot: EnvironmentAtmosphereSnapshot = {
+    timeHours: 17.4,
+    sunDir: { x: -0.82, y: 0.43, z: -0.37 },
+    moonDir: { x: 0.5, y: 0.29, z: -0.81 },
+    skyTop: { r: 0.145, g: 0.31, b: 0.52 },
+    skyMid: { r: 0.45, g: 0.56, b: 0.7 },
+    skyHorizon: { r: 0.87, g: 0.7, b: 0.59 },
+    sunColor: { r: 1.0, g: 0.74, b: 0.44 },
+    moonColor: { r: 0.61, g: 0.75, b: 0.96 },
+    hemiGround: { r: 0.33, g: 0.29, b: 0.28 },
+    nightFactor: 0.18,
+    cloudCoverage: 0.28,
+    stormDarkness: 0,
+    rainAmount: 0,
+  };
 
   private readonly sunLight: THREE.DirectionalLight;
   private readonly hemiLight: THREE.HemisphereLight;
@@ -362,8 +384,13 @@ export class TimeAndWeatherSystem {
     applyShadowConfigToLight(this.sunLight, this.shadowConfig);
 
     // Synchronize procedural cloud shader complexity with existing GraphicsQuality tier
+    this.currentQuality = resolvedQuality;
     this.cloudQuality = getCloudQualityConfig(resolvedQuality, this.isSoftwareGl);
     this.skyDomeMat.uniforms.uCloudQuality.value = this.cloudQuality.detailLevel;
+  }
+
+  public getEnvironmentSnapshot(): EnvironmentAtmosphereSnapshot {
+    return this.envSnapshot;
   }
 
   public getLightingDebugState(): {
@@ -503,10 +530,46 @@ export class TimeAndWeatherSystem {
     this.hemiLight.groundColor.copy(this.tmpHemiGround);
     this.hemiLight.intensity = hemiIntBase * (1 - storm * 0.24 - this.cloudAmount * 0.08);
 
-    // Modulate RoomEnvironment IBL intensity by time-of-day & storm cover so daylight keeps crisp contrast
+    // Modulate coastal PMREM IBL intensity by time-of-day & storm cover so daylight keeps crisp contrast
     // and night genuinely reads as dark moonlit night where emissive lights & neon pop
-    const baseEnvIntensity = lerp(0.52, 0.09, this.nightFactor);
-    this.scene.environmentIntensity = baseEnvIntensity * (1 - storm * 0.34 - this.cloudAmount * 0.1);
+    this.scene.environmentIntensity = computeEnvironmentIntensity(
+      this.nightFactor,
+      this.cloudState.coverage,
+      storm,
+      this.currentQuality,
+    );
+
+    // Populate zero-allocation atmospheric snapshot for DynamicEnvironmentSystem
+    const env = this.envSnapshot;
+    env.timeHours = this.timeHours;
+    env.sunDir.x = this.sunDirection.x;
+    env.sunDir.y = this.sunDirection.y;
+    env.sunDir.z = this.sunDirection.z;
+    env.moonDir.x = this.moonDirection.x;
+    env.moonDir.y = this.moonDirection.y;
+    env.moonDir.z = this.moonDirection.z;
+    env.skyTop.r = this.tmpSkyTop.r;
+    env.skyTop.g = this.tmpSkyTop.g;
+    env.skyTop.b = this.tmpSkyTop.b;
+    env.skyMid.r = this.tmpSkyMid.r;
+    env.skyMid.g = this.tmpSkyMid.g;
+    env.skyMid.b = this.tmpSkyMid.b;
+    env.skyHorizon.r = this.tmpFog.r;
+    env.skyHorizon.g = this.tmpFog.g;
+    env.skyHorizon.b = this.tmpFog.b;
+    env.sunColor.r = this.tmpSun.r;
+    env.sunColor.g = this.tmpSun.g;
+    env.sunColor.b = this.tmpSun.b;
+    env.moonColor.r = this.moonKeyColor.r;
+    env.moonColor.g = this.moonKeyColor.g;
+    env.moonColor.b = this.moonKeyColor.b;
+    env.hemiGround.r = this.tmpHemiGround.r;
+    env.hemiGround.g = this.tmpHemiGround.g;
+    env.hemiGround.b = this.tmpHemiGround.b;
+    env.nightFactor = this.nightFactor;
+    env.cloudCoverage = this.cloudState.coverage;
+    env.stormDarkness = storm;
+    env.rainAmount = this.rainAmount;
 
     // Smooth forward shadow frustum lead while driving + light-space texel snapping
     const signedSpeed = clamp(focusSpeed, -10, 34);
@@ -589,7 +652,7 @@ export class TimeAndWeatherSystem {
     // - Unmapped podium glass (lobbyGlassMat, emissiveMap == null) stays subtle (<= 0.20) so solid podium walls never bloom
     // - Mapped upper-story windows (emissiveMap != null), neon signs, and streetlight bulbs exceed 1.15 at night to bloom selectively
     const windowGlow = 0.08 + Math.pow(this.nightFactor, 1.15) * 1.42;
-    const lobbyGlassGlow = 0.04 + this.nightFactor * 0.16;
+    const lobbyGlassGlow = 0.015 + this.nightFactor * 0.045;
     for (let i = 0; i < world.emissiveBuildingMaterials.length; i++) {
       const mat = world.emissiveBuildingMaterials[i];
       mat.emissiveIntensity = mat.emissiveMap ? windowGlow : lobbyGlassGlow;
@@ -606,6 +669,19 @@ export class TimeAndWeatherSystem {
 
     // Wet road slick reflection synchronized across all road directions, intersections & markings
     applyRoadWetness(world.wetRoadSurfaces, this.roadWetness);
+
+    // Synchronize coastal Atlantic ocean lighting, sky Fresnel reflection, and weather roughness
+    const ou = world.oceanUniforms;
+    ou.uSunDir.value.copy(this.sunDirection);
+    ou.uMoonDir.value.copy(this.moonDirection);
+    ou.uSunColor.value.copy(this.tmpSun);
+    ou.uMoonColor.value.copy(this.moonKeyColor);
+    ou.uSkyTop.value.copy(this.tmpSkyTop);
+    ou.uSkyHorizon.value.copy(this.tmpFog);
+    ou.uNightFactor.value = this.nightFactor;
+    ou.uCloudCoverage.value = this.cloudState.coverage;
+    ou.uStormDarkness.value = storm;
+    ou.uRainAmount.value = this.rainAmount;
 
     // 5. Update rain particles around focus point
     this.rainMaterial.opacity = this.rainAmount * 0.68;
@@ -628,6 +704,10 @@ export class TimeAndWeatherSystem {
   }
 
   public dispose(): void {
+    if (this.sunLight.shadow.map) {
+      this.sunLight.shadow.map.dispose();
+      this.sunLight.shadow.map = null;
+    }
     this.skyDomeGeo.dispose();
     this.skyDomeMat.dispose();
     this.sunDiscGeo.dispose();

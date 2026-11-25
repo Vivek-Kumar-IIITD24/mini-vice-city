@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   CameraViewMode,
   DistrictId,
@@ -36,7 +35,11 @@ import {
 } from '../world/cityData';
 import { createProceduralTextures, ProceduralTextureSet } from '../world/textures';
 import { buildCityWorld, BuiltCityWorld } from '../world/cityBuilder';
-import { createVehicleMesh, VehicleRig } from '../vehicles/vehicleModels';
+import {
+  createVehicleMesh,
+  disposeSharedVehicleResources,
+  VehicleRig,
+} from '../vehicles/vehicleModels';
 import {
   VehicleBodyState,
   computeGearLabel,
@@ -59,6 +62,7 @@ import {
 } from '../missions/missionData';
 import { WorldEffectsAndMarkers } from '../missions/missionMarkers';
 import { CinematicPostPipeline } from '../rendering/postProcessing';
+import { DynamicEnvironmentSystem } from '../rendering/environmentReflections';
 
 interface DrivableVehicleEntity {
   instanceId: string;
@@ -86,7 +90,8 @@ export class GameEngine {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly isSoftwareGl: boolean;
-  private readonly envRT: THREE.WebGLRenderTarget;
+  private readonly envReflections: DynamicEnvironmentSystem;
+  private pendingEnvForceRefresh = false;
 
   private readonly layout: CityLayout;
   private readonly textures: ProceduralTextureSet;
@@ -149,8 +154,8 @@ export class GameEngine {
     this.renderer.toneMappingExposure = 1.12;
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.setPixelRatio(this.computeTargetPixelRatio(this.saveData.settings));
     this.renderer.setSize(mountEl.clientWidth || window.innerWidth, mountEl.clientHeight || window.innerHeight);
-    this.applyGraphicsSettings(this.saveData.settings);
 
     mountEl.innerHTML = '';
     this.renderer.domElement.style.display = 'block';
@@ -159,12 +164,14 @@ export class GameEngine {
     this.renderer.domElement.setAttribute('data-testid', 'vice-canvas');
     mountEl.appendChild(this.renderer.domElement);
 
-    // Scene + mandatory procedural RoomEnvironment IBL
+    // Scene + Dynamic Tropical Coastal PMREM Environment Reflections (replaces static RoomEnvironment)
     this.scene = new THREE.Scene();
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
-    this.scene.environment = this.envRT.texture;
-    pmrem.dispose();
+    this.envReflections = new DynamicEnvironmentSystem(
+      this.renderer,
+      this.scene,
+      this.saveData.settings.graphics,
+      this.isSoftwareGl,
+    );
 
     // Build city layout & 3D world
     this.layout = generateCityLayout();
@@ -253,6 +260,7 @@ export class GameEngine {
     this.setGameState(GameState.Title);
     this.cameraRig.updateTitleTour(0.016);
     this.timeWeather.update(0.016, 60, 0, this.world);
+    this.envReflections.update(0.016, this.timeWeather.getEnvironmentSnapshot(), true);
     this.renderFrame(0.016);
     this.emitHudSnapshot();
 
@@ -443,6 +451,8 @@ export class GameEngine {
   }
 
   public updateSettings(partial: Partial<GameSettings>): void {
+    const atmosphereChanged =
+      partial.timePreset !== undefined || partial.weather !== undefined;
     this.saveData.settings = { ...this.saveData.settings, ...partial };
     this.applyGraphicsSettings(this.saveData.settings);
     this.sound.updateSettings(this.saveData.settings);
@@ -452,6 +462,24 @@ export class GameEngine {
       this.saveData.settings.weather,
       this.saveData.settings.dynamicWeather,
     );
+    if (atmosphereChanged) {
+      // Immediately refresh sky, fog, lighting, ocean, and environment snapshot so even while Paused
+      // the next renderFrame bakes PMREM once on fresh data rather than once on stale data + once on resume.
+      const focusX =
+        this.gameState === GameState.Title
+          ? 60
+          : this.activeVehicle
+            ? this.activeVehicle.body.x
+            : this.player.x;
+      const focusZ =
+        this.gameState === GameState.Title
+          ? 0
+          : this.activeVehicle
+            ? this.activeVehicle.body.z
+            : this.player.z;
+      this.timeWeather.update(0, focusX, focusZ, this.world);
+      this.pendingEnvForceRefresh = true;
+    }
     this.persistNow();
     this.emitHudSnapshot();
   }
@@ -460,7 +488,7 @@ export class GameEngine {
     this.updateSettings({ muted: !this.saveData.settings.muted });
   }
 
-  private applyGraphicsSettings(settings: GameSettings): void {
+  private computeTargetPixelRatio(settings: GameSettings): number {
     const baseDpr = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
     const qualityMult =
       settings.graphics === GraphicsQuality.Low
@@ -468,9 +496,13 @@ export class GameEngine {
         : settings.graphics === GraphicsQuality.Medium
           ? 0.9
           : 1.0;
-    const targetPr = this.isSoftwareGl
+    return this.isSoftwareGl
       ? 1
       : Math.max(0.7, baseDpr * qualityMult * settings.resolutionScale);
+  }
+
+  private applyGraphicsSettings(settings: GameSettings): void {
+    const targetPr = this.computeTargetPixelRatio(settings);
     this.renderer.setPixelRatio(targetPr);
 
     if (this.timeWeather) {
@@ -484,6 +516,10 @@ export class GameEngine {
         this.renderer.shadowMap.enabled = true;
         this.timeWeather.setShadowQuality(true, 2048, settings.graphics);
       }
+    }
+
+    if (this.envReflections) {
+      this.envReflections.setQuality(settings.graphics);
     }
 
     if (this.postPipeline) {
@@ -723,6 +759,13 @@ export class GameEngine {
   }
 
   private renderFrame(dt: number): void {
+    this.envReflections.update(
+      dt,
+      this.timeWeather.getEnvironmentSnapshot(),
+      this.pendingEnvForceRefresh,
+    );
+    this.pendingEnvForceRefresh = false;
+
     this.postPipeline.update(dt, {
       timeHours: this.timeWeather.timeHours,
       nightFactor: this.timeWeather.nightFactor,
@@ -1352,8 +1395,9 @@ export class GameEngine {
     this.timeWeather.dispose();
     this.markers.dispose();
     for (const v of this.vehicles) v.rig.dispose();
+    disposeSharedVehicleResources();
     this.postPipeline.dispose();
-    this.envRT.dispose();
+    this.envReflections.dispose();
     this.renderer.dispose();
     this.mountEl.innerHTML = '';
   }

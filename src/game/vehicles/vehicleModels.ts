@@ -1,12 +1,73 @@
 import * as THREE from 'three';
 import { VehicleKind, VehicleSpec } from '../types';
 
+export interface VehiclePaintProfile {
+  roughness: number;
+  metalness: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  envMapIntensity: number;
+}
+
+export function getVehiclePaintMaterialProfile(kind: VehicleKind): VehiclePaintProfile {
+  switch (kind) {
+    case VehicleKind.Sports:
+      // Veloce GT: deep glossy automotive metallic clearcoat
+      return {
+        roughness: 0.22,
+        metalness: 0.48,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.06,
+        envMapIntensity: 1.32,
+      };
+    case VehicleKind.Sedan:
+      // Solstice Royale: luxury pearlescent metallic lacquer
+      return {
+        roughness: 0.2,
+        metalness: 0.56,
+        clearcoat: 0.96,
+        clearcoatRoughness: 0.075,
+        envMapIntensity: 1.28,
+      };
+    case VehicleKind.Suv:
+      // Bayside Titan: rugged satin-clearcoat SUV finish
+      return {
+        roughness: 0.29,
+        metalness: 0.34,
+        clearcoat: 0.78,
+        clearcoatRoughness: 0.14,
+        envMapIntensity: 1.08,
+      };
+    case VehicleKind.Police:
+      // VCPD Interceptor: crisp patrol fleet gloss
+      return {
+        roughness: 0.23,
+        metalness: 0.32,
+        clearcoat: 0.92,
+        clearcoatRoughness: 0.085,
+        envMapIntensity: 1.2,
+      };
+    case VehicleKind.Traffic:
+    default:
+      // Ambient coastal traffic fleet
+      return {
+        roughness: 0.28,
+        metalness: 0.34,
+        clearcoat: 0.82,
+        clearcoatRoughness: 0.13,
+        envMapIntensity: 1.1,
+      };
+  }
+}
+
 export interface VehicleRig {
   root: THREE.Group;
   bodyGroup: THREE.Group;
   frontLeftPivot: THREE.Group;
   frontRightPivot: THREE.Group;
   wheels: THREE.Object3D[];
+  paintMat: THREE.MeshPhysicalMaterial;
+  glassMat: THREE.MeshPhysicalMaterial;
   headlightMat: THREE.MeshStandardMaterial;
   brakeLightMat: THREE.MeshStandardMaterial;
   headlightBeam: THREE.Mesh;
@@ -44,6 +105,13 @@ function getSoftHeadlightBeamTexture(): THREE.Texture | null {
   return tex;
 }
 
+export function disposeSharedVehicleResources(): void {
+  if (cachedBeamTexture) {
+    cachedBeamTexture.dispose();
+    cachedBeamTexture = null;
+  }
+}
+
 /**
  * Builds a composite 10-14 part procedural 3D vehicle pivoted at bottom-center (y = 0).
  * Local forward direction is -Z.
@@ -59,60 +127,94 @@ export function createVehicleMesh(
 
   const disposables: Array<{ dispose: () => void }> = [];
   const mainColor = overrideColor ?? spec.color;
+  const paintProfile = getVehiclePaintMaterialProfile(spec.kind);
 
-  const paintMat = new THREE.MeshStandardMaterial({
+  const paintMat = new THREE.MeshPhysicalMaterial({
     color: mainColor,
-    roughness: 0.16,
-    metalness: 0.56,
-    envMapIntensity: 1.35,
+    roughness: paintProfile.roughness,
+    metalness: paintProfile.metalness,
+    clearcoat: paintProfile.clearcoat,
+    clearcoatRoughness: paintProfile.clearcoatRoughness,
+    reflectivity: 0.9,
+    envMapIntensity: paintProfile.envMapIntensity,
   });
-  const accentMat = new THREE.MeshStandardMaterial({
+  const accentMat = new THREE.MeshPhysicalMaterial({
     color: spec.accentColor,
-    roughness: 0.35,
-    metalness: 0.45,
+    roughness: spec.kind === VehicleKind.Police ? 0.24 : 0.34,
+    metalness: spec.kind === VehicleKind.Police ? 0.22 : 0.42,
+    clearcoat: spec.kind === VehicleKind.Police ? 0.88 : 0.65,
+    clearcoatRoughness: 0.12,
+    envMapIntensity: 1.1,
   });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a,
-    roughness: 0.08,
-    metalness: 0.85,
+  // Realistic dark-tinted reflective automotive windshield & cabin glass (no multi-pass transmission cost)
+  const glassMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0e2236,
+    roughness: 0.055,
+    metalness: 0.14,
+    ior: 1.52,
+    reflectivity: 0.96,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.04,
+    envMapIntensity: 1.55,
+    transparent: true,
+    opacity: 0.86,
+  });
+  const cabinInteriorMat = new THREE.MeshStandardMaterial({
+    color: 0x0b0f17,
+    roughness: 0.92,
+    metalness: 0.04,
+    envMapIntensity: 0.2,
   });
   const trimDarkMat = new THREE.MeshStandardMaterial({
     color: 0x161922,
-    roughness: 0.65,
-    metalness: 0.3,
+    roughness: 0.68,
+    metalness: 0.22,
+    envMapIntensity: 0.55,
   });
   const chromeMat = new THREE.MeshStandardMaterial({
-    color: 0xe2e8f0,
-    roughness: 0.16,
-    metalness: 0.92,
+    color: 0xe6edf6,
+    roughness: 0.12,
+    metalness: 0.95,
+    envMapIntensity: 1.45,
   });
   const tireMat = new THREE.MeshStandardMaterial({
-    color: 0x181a1f,
-    roughness: 0.88,
-    metalness: 0.06,
+    color: 0x17191e,
+    roughness: 0.9,
+    metalness: 0.04,
+    envMapIntensity: 0.3,
   });
   const rimMat = new THREE.MeshStandardMaterial({
-    color: 0xdbe3ee,
-    roughness: 0.22,
+    color: 0xdce4ef,
+    roughness: 0.2,
     metalness: 0.88,
+    envMapIntensity: 1.35,
   });
-  const headlightMat = new THREE.MeshStandardMaterial({
+  const headlightMat = new THREE.MeshPhysicalMaterial({
     color: 0xfff8e7,
     emissive: 0xfff3c4,
     emissiveIntensity: 0.6,
-    roughness: 0.15,
+    roughness: 0.1,
+    metalness: 0.12,
+    clearcoat: 0.95,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.25,
   });
-  const brakeLightMat = new THREE.MeshStandardMaterial({
+  const brakeLightMat = new THREE.MeshPhysicalMaterial({
     color: 0x7f1d1d,
     emissive: 0xef4444,
     emissiveIntensity: 0.35,
-    roughness: 0.2,
+    roughness: 0.14,
+    metalness: 0.1,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.06,
+    envMapIntensity: 1.15,
   });
 
   disposables.push(
     paintMat,
     accentMat,
     glassMat,
+    cabinInteriorMat,
     trimDarkMat,
     chromeMat,
     tireMat,
@@ -179,12 +281,20 @@ export function createVehicleMesh(
   bodyGroup.add(grilleMesh);
   disposables.push(grilleGeo);
 
-  // 4. Upper Greenhouse Cabin & Roof
+  // 4. Upper Greenhouse Cabin (Dark Interior Core + Reflective Tinted Automotive Glass) & Roof
   const cabinLen = isSuv ? l * 0.62 : isSports ? l * 0.44 : l * 0.48;
   const cabinZ = isSuv ? 0.38 : isSports ? 0.22 : 0.18;
+  const cabinY = groundClearance + lowerH + cabinH / 2 - 0.04;
+
+  const cabinCoreGeo = new THREE.BoxGeometry(w * 0.74, cabinH * 0.84, cabinLen * 0.86);
+  const cabinCoreMesh = new THREE.Mesh(cabinCoreGeo, cabinInteriorMat);
+  cabinCoreMesh.position.set(0, cabinY - 0.02, cabinZ);
+  bodyGroup.add(cabinCoreMesh);
+  disposables.push(cabinCoreGeo);
+
   const cabinGeo = new THREE.BoxGeometry(w * 0.84, cabinH, cabinLen);
   const cabinMesh = new THREE.Mesh(cabinGeo, glassMat);
-  cabinMesh.position.set(0, groundClearance + lowerH + cabinH / 2 - 0.04, cabinZ);
+  cabinMesh.position.set(0, cabinY, cabinZ);
   cabinMesh.castShadow = true;
   bodyGroup.add(cabinMesh);
   disposables.push(cabinGeo);
@@ -373,6 +483,8 @@ export function createVehicleMesh(
     frontLeftPivot,
     frontRightPivot,
     wheels: [wFL, wFR, wRL, wRR],
+    paintMat,
+    glassMat,
     headlightMat,
     brakeLightMat,
     headlightBeam,

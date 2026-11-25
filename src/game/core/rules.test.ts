@@ -38,6 +38,7 @@ import {
   stepRoadWetness,
 } from '../world/wetRoadSync';
 import {
+  applyShadowConfigToLight,
   computeCelestialState,
   computeStabilizedShadowPlacement,
   getShadowConfigForQuality,
@@ -54,7 +55,43 @@ import {
   computeCinematicPostState,
   getPostProcessingConfigForQuality,
 } from '../rendering/postProcessing';
-import { DistrictId, GraphicsQuality, TimePreset, WeatherType } from '../types';
+import {
+  computeEnvironmentDelta,
+  computeEnvironmentIntensity,
+  EnvironmentAtmosphereSnapshot,
+  getEnvironmentQualityConfig,
+  shouldRefreshEnvironment,
+} from '../rendering/environmentReflections';
+import {
+  createVehicleMesh,
+  disposeSharedVehicleResources,
+  getVehiclePaintMaterialProfile,
+} from '../vehicles/vehicleModels';
+import { WorldEffectsAndMarkers } from '../missions/missionMarkers';
+import { DistrictId, GraphicsQuality, TimePreset, VehicleKind, WeatherType } from '../types';
+
+function createMockTextures(): ProceduralTextureSet {
+  const dummyTex = () => new THREE.Texture() as unknown as THREE.CanvasTexture;
+  return {
+    asphaltMap: dummyTex(),
+    asphaltBump: dummyTex(),
+    asphaltPuddleRoughness: dummyTex(),
+    sidewalkMap: dummyTex(),
+    skyscraperMap: dummyTex(),
+    skyscraperEmissive: dummyTex(),
+    skyscraperRoughness: dummyTex(),
+    skyscraperMetalness: dummyTex(),
+    skyscraperGlassMask: dummyTex(),
+    hotelMap: dummyTex(),
+    hotelEmissive: dummyTex(),
+    hotelRoughness: dummyTex(),
+    hotelGlassMask: dummyTex(),
+    warehouseMap: dummyTex(),
+    sandMap: dummyTex(),
+    contactShadowMap: dummyTex(),
+    dispose: () => {},
+  };
+}
 
 test('city layout places player spawn and starter vehicle in clear open space without building overlap', () => {
   const layout = generateCityLayout();
@@ -299,20 +336,7 @@ test('wet-road synchronization wets all asphalt directions and intersections equ
 
 test('TimeAndWeatherSystem synchronizes rain and clear weather across BuiltCityWorld NS, EW, and intersection roads', () => {
   const layout = generateCityLayout();
-  const dummyTex = () => new THREE.Texture() as unknown as THREE.CanvasTexture;
-  const mockTextures: ProceduralTextureSet = {
-    asphaltMap: dummyTex(),
-    asphaltBump: dummyTex(),
-    sidewalkMap: dummyTex(),
-    skyscraperMap: dummyTex(),
-    skyscraperEmissive: dummyTex(),
-    hotelMap: dummyTex(),
-    hotelEmissive: dummyTex(),
-    warehouseMap: dummyTex(),
-    sandMap: dummyTex(),
-    contactShadowMap: dummyTex(),
-    dispose: () => {},
-  };
+  const mockTextures = createMockTextures();
 
   const scene = new THREE.Scene();
   const world = buildCityWorld(layout, mockTextures);
@@ -408,20 +432,7 @@ test('computeCelestialState produces normalized sun/moon vectors and smooth 24-h
 
 test('TimeAndWeatherSystem aligns sunDisc, moonDisc, directional light, and sky shader uniforms identically', () => {
   const layout = generateCityLayout();
-  const dummyTex = () => new THREE.Texture() as unknown as THREE.CanvasTexture;
-  const mockTextures: ProceduralTextureSet = {
-    asphaltMap: dummyTex(),
-    asphaltBump: dummyTex(),
-    sidewalkMap: dummyTex(),
-    skyscraperMap: dummyTex(),
-    skyscraperEmissive: dummyTex(),
-    hotelMap: dummyTex(),
-    hotelEmissive: dummyTex(),
-    warehouseMap: dummyTex(),
-    sandMap: dummyTex(),
-    contactShadowMap: dummyTex(),
-    dispose: () => {},
-  };
+  const mockTextures = createMockTextures();
 
   const scene = new THREE.Scene();
   const world = buildCityWorld(layout, mockTextures);
@@ -660,20 +671,7 @@ test('cloud quality tiers, time-of-day cloud lighting, and subtle cloud shadow m
 
 test('TimeAndWeatherSystem synchronizes procedural cloud uniforms, quality tiers, and weather states seamlessly', () => {
   const layout = generateCityLayout();
-  const dummyTex = () => new THREE.Texture() as unknown as THREE.CanvasTexture;
-  const mockTextures: ProceduralTextureSet = {
-    asphaltMap: dummyTex(),
-    asphaltBump: dummyTex(),
-    sidewalkMap: dummyTex(),
-    skyscraperMap: dummyTex(),
-    skyscraperEmissive: dummyTex(),
-    hotelMap: dummyTex(),
-    hotelEmissive: dummyTex(),
-    warehouseMap: dummyTex(),
-    sandMap: dummyTex(),
-    contactShadowMap: dummyTex(),
-    dispose: () => {},
-  };
+  const mockTextures = createMockTextures();
 
   const scene = new THREE.Scene();
   const world = buildCityWorld(layout, mockTextures);
@@ -734,13 +732,15 @@ test('getPostProcessingConfigForQuality configures Low direct fallback, Medium h
   assert.equal(medHw.enabled, true);
   assert.equal(medHw.bloomEnabled, true);
   assert.equal(medHw.bloomResolutionScale, 0.5);
-  assert.ok(medSw.bloomResolutionScale < medHw.bloomResolutionScale, 'software GL uses compact bloom resolution');
+  assert.equal(medSw.bloomEnabled, false, 'software GL must avoid expensive multi-pass UnrealBloomPass');
+  assert.equal(medSw.gradeEnabled, true, 'software GL keeps single-pass grading & lightweight HDR halo');
 
   assert.equal(highHw.enabled, true);
   assert.equal(highHw.bloomEnabled, true);
   assert.equal(highHw.bloomResolutionScale, 0.75);
   assert.ok(highHw.bloomStrengthMultiplier > medHw.bloomStrengthMultiplier);
-  assert.ok(highSw.bloomResolutionScale < highHw.bloomResolutionScale);
+  assert.equal(highSw.bloomEnabled, false, 'software GL must avoid expensive multi-pass UnrealBloomPass');
+  assert.equal(highSw.gradeEnabled, true);
 });
 
 test('computeCinematicPostState enforces selective HDR bloom threshold (>1.05) and adapts colour grading across Morning, Midday, Golden Hour, Sunset, Night, Rainy Night, and Police Pursuit', () => {
@@ -812,20 +812,7 @@ test('computeCinematicPostState enforces selective HDR bloom threshold (>1.05) a
 
 test('selective HDR emissive calibration keeps daytime windows below bloom threshold while night emitters exceed threshold', () => {
   const layout = generateCityLayout();
-  const dummyTex = () => new THREE.Texture() as unknown as THREE.CanvasTexture;
-  const mockTextures: ProceduralTextureSet = {
-    asphaltMap: dummyTex(),
-    asphaltBump: dummyTex(),
-    sidewalkMap: dummyTex(),
-    skyscraperMap: dummyTex(),
-    skyscraperEmissive: dummyTex(),
-    hotelMap: dummyTex(),
-    hotelEmissive: dummyTex(),
-    warehouseMap: dummyTex(),
-    sandMap: dummyTex(),
-    contactShadowMap: dummyTex(),
-    dispose: () => {},
-  };
+  const mockTextures = createMockTextures();
 
   const scene = new THREE.Scene();
   const world = buildCityWorld(layout, mockTextures);
@@ -896,4 +883,295 @@ test('selective HDR emissive calibration keeps daytime windows below bloom thres
   weather.dispose();
   world.dispose();
 });
+
+test('dynamic environment reflection config, caching, interval throttling, and instant preset jump detection', () => {
+  const lowCfg = getEnvironmentQualityConfig(GraphicsQuality.Low, false);
+  const medCfg = getEnvironmentQualityConfig(GraphicsQuality.Medium, false);
+  const highCfg = getEnvironmentQualityConfig(GraphicsQuality.High, false);
+  const swCfg = getEnvironmentQualityConfig(GraphicsQuality.High, true);
+
+  assert.ok(lowCfg.minIntervalSec > medCfg.minIntervalSec && medCfg.minIntervalSec > highCfg.minIntervalSec);
+  assert.ok(highCfg.sigma < medCfg.sigma && medCfg.sigma < lowCfg.sigma);
+  assert.ok(swCfg.minIntervalSec >= 5.0, 'Software GL should use conservative continuous refresh interval');
+
+  const makeSnap = (overrides: Partial<EnvironmentAtmosphereSnapshot> = {}): EnvironmentAtmosphereSnapshot => ({
+    timeHours: 17.4,
+    sunDir: { x: -0.82, y: 0.43, z: -0.37 },
+    moonDir: { x: 0.5, y: 0.29, z: -0.81 },
+    skyTop: { r: 0.145, g: 0.31, b: 0.52 },
+    skyMid: { r: 0.45, g: 0.56, b: 0.7 },
+    skyHorizon: { r: 0.87, g: 0.7, b: 0.59 },
+    sunColor: { r: 1.0, g: 0.74, b: 0.44 },
+    moonColor: { r: 0.61, g: 0.75, b: 0.96 },
+    hemiGround: { r: 0.33, g: 0.29, b: 0.28 },
+    nightFactor: 0.18,
+    cloudCoverage: 0.28,
+    stormDarkness: 0.0,
+    rainAmount: 0.0,
+    ...overrides,
+  });
+
+  const base = makeSnap();
+  // First update always refreshes
+  const initDecision = shouldRefreshEnvironment(null, base, 0, highCfg, false);
+  assert.equal(initDecision.refresh, true);
+  assert.equal(initDecision.reason, 'initial');
+
+  // Identical state after interval remains cached (no wasted PMREM regeneration)
+  const cachedDecision = shouldRefreshEnvironment(base, makeSnap(), 10.0, highCfg, false);
+  assert.equal(cachedDecision.refresh, false);
+  assert.equal(cachedDecision.reason, 'cached');
+
+  // Moderate drift before minIntervalSec is throttled
+  const moderateDrift = makeSnap({ cloudCoverage: 0.35 });
+  const throttled = shouldRefreshEnvironment(base, moderateDrift, 0.4, highCfg, false);
+  assert.equal(throttled.refresh, false);
+  assert.equal(throttled.reason, 'interval_throttled');
+
+  // Same moderate drift after minIntervalSec refreshes
+  const allowed = shouldRefreshEnvironment(base, moderateDrift, 2.0, highCfg, false);
+  assert.equal(allowed.refresh, true);
+  assert.equal(allowed.reason, 'threshold_exceeded');
+
+  // Major preset switch (Golden Hour -> Night) refreshes immediately even at elapsedSec = 0.05
+  const nightSnap = makeSnap({
+    timeHours: 22.5,
+    sunDir: { x: 0.15, y: -0.82, z: 0.55 },
+    nightFactor: 1.0,
+    skyTop: { r: 0.02, g: 0.04, b: 0.09 },
+  });
+  const delta = computeEnvironmentDelta(base, nightSnap);
+  assert.equal(delta.isMajorTransition, true);
+  const presetJump = shouldRefreshEnvironment(base, nightSnap, 0.05, lowCfg, false);
+  assert.equal(presetJump.refresh, true);
+  assert.equal(presetJump.reason, 'major_transition');
+
+  // Environment intensity adapts smoothly across Midday, Golden Hour, Night, and Rainy Storm
+  const middayInt = computeEnvironmentIntensity(0.0, 0.25, 0.0, GraphicsQuality.High);
+  const stormDayInt = computeEnvironmentIntensity(0.0, 0.94, 0.88, GraphicsQuality.High);
+  const nightInt = computeEnvironmentIntensity(1.0, 0.25, 0.0, GraphicsQuality.High);
+  assert.ok(middayInt > 0.7 && middayInt < 1.0, `midday env intensity should stay balanced, got ${middayInt}`);
+  assert.ok(stormDayInt < middayInt * 0.8, 'storm cover should attenuate env intensity');
+  assert.ok(nightInt < 0.15 && nightInt > 0.08, `night env intensity must stay restrained (< 0.15), got ${nightInt}`);
+});
+
+test('vehicle models use physical clearcoat paint differentiated by class and tinted reflective automotive glass', () => {
+  const dummyShadow = new THREE.Texture();
+  const veloce = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const solstice = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow);
+  const titan = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow);
+  const vcpd = createVehicleMesh(VEHICLE_CATALOG.vcpd_interceptor, dummyShadow);
+
+  const sportsProf = getVehiclePaintMaterialProfile(VehicleKind.Sports);
+  const suvProf = getVehiclePaintMaterialProfile(VehicleKind.Suv);
+  assert.ok(sportsProf.clearcoat > suvProf.clearcoat, 'Veloce GT sports paint should have higher clearcoat than SUV');
+  assert.ok(sportsProf.clearcoatRoughness < suvProf.clearcoatRoughness, 'Veloce GT clearcoat should be glossier than SUV');
+
+  for (const rig of [veloce, solstice, titan, vcpd]) {
+    assert.ok(rig.paintMat instanceof THREE.MeshPhysicalMaterial, 'vehicle paint must be MeshPhysicalMaterial');
+    assert.ok(rig.paintMat.clearcoat >= 0.75, 'vehicle paint must have clearcoat');
+    assert.ok(rig.glassMat instanceof THREE.MeshPhysicalMaterial, 'vehicle glass must be MeshPhysicalMaterial');
+    assert.ok(rig.glassMat.ior >= 1.48 && rig.glassMat.clearcoat >= 0.95, 'vehicle glass must have automotive IOR & clearcoat');
+    assert.ok(rig.glassMat.roughness <= 0.08, 'vehicle glass must remain sleek and reflective');
+    assert.equal(rig.glassMat.transparent, true, 'vehicle glass should use subtle tinted transparency over dark interior');
+    rig.dispose();
+  }
+  dummyShadow.dispose();
+});
+
+test('BuiltCityWorld and TimeAndWeatherSystem synchronize glass/concrete PBR masks, puddle wetness uniform, and dynamic ocean lighting', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const weather = new TimeAndWeatherSystem(scene, false);
+
+  // Verify skyscraper & hotel building materials use MeshPhysicalMaterial with dedicated glass masks
+  const physicalBuildingMats = world.emissiveBuildingMaterials.filter(
+    (m): m is THREE.MeshPhysicalMaterial => m instanceof THREE.MeshPhysicalMaterial,
+  );
+  assert.ok(
+    physicalBuildingMats.length >= 10,
+    'Downtown skyscrapers, hotels, and lobbies should use MeshPhysicalMaterial',
+  );
+  const skyscraperMat = physicalBuildingMats.find((m) => m.roughnessMap === mockTextures.skyscraperRoughness);
+  const hotelMat = physicalBuildingMats.find((m) => m.roughnessMap === mockTextures.hotelRoughness);
+  assert.ok(skyscraperMat, 'skyscrapers must bind skyscraperRoughness map for window vs concrete separation');
+  assert.equal(skyscraperMat.metalnessMap, mockTextures.skyscraperMetalness);
+  assert.equal(skyscraperMat.clearcoatMap, mockTextures.skyscraperGlassMask);
+  assert.ok(hotelMat, 'Art Deco hotels must bind hotelRoughness & hotelGlassMask for window vs stucco separation');
+  assert.equal(hotelMat.clearcoatMap, mockTextures.hotelGlassMask);
+
+  // Verify ocean material uses MeshPhysicalMaterial and synchronizes with Sunset, Night, and Rain
+  assert.ok(world.oceanMaterial instanceof THREE.MeshPhysicalMaterial);
+
+  weather.setTimePreset(TimePreset.Sunset);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, 96, 44, world, 0, 0);
+  const sunsetEnv = weather.getEnvironmentSnapshot();
+  assert.ok(
+    world.oceanUniforms.uSunDir.value.distanceTo(weather.sunDirection) < 1e-5,
+    'ocean uSunDir must match unified sunDirection',
+  );
+  assert.ok(
+    Math.abs(sunsetEnv.sunDir.x - weather.sunDirection.x) < 1e-5 &&
+      Math.abs(sunsetEnv.nightFactor - weather.nightFactor) < 1e-5,
+    'environment snapshot must match TimeAndWeatherSystem single source of truth',
+  );
+  assert.equal(world.roadWetnessUniform.value, 0, 'puddle shader wetness uniform starts dry in Clear weather');
+
+  // Switch to Rainy Night and step until wet + stormy
+  weather.setTimePreset(TimePreset.Night);
+  weather.setWeather(WeatherType.Rain, false);
+  for (let i = 0; i < 90; i++) {
+    weather.update(0.05, 96, 44, world, 0, 0);
+  }
+  const rainNightEnv = weather.getEnvironmentSnapshot();
+  assert.ok(world.roadWetnessUniform.value > 0.85, 'puddle shader wetness uniform must sync during Rain');
+  assert.ok(world.oceanUniforms.uNightFactor.value > 0.9, 'ocean must reflect Night state');
+  assert.ok(world.oceanUniforms.uStormDarkness.value > 0.78, 'ocean must respond to stormy rain darkness');
+  assert.ok(rainNightEnv.rainAmount > 0.85 && rainNightEnv.stormDarkness > 0.78);
+
+  weather.dispose();
+  world.dispose();
+});
+
+test('Phase 1F: repeated time-of-day and weather transitions keep all 5 rendering phases synchronized without drift or flashes', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const weather = new TimeAndWeatherSystem(scene, false);
+  const highPostCfg = getPostProcessingConfigForQuality(GraphicsQuality.High, false);
+
+  const times = [
+    TimePreset.Morning,
+    TimePreset.Afternoon,
+    TimePreset.GoldenHour,
+    TimePreset.Sunset,
+    TimePreset.Night,
+    TimePreset.Afternoon,
+    TimePreset.Night,
+  ];
+  const weathers = [WeatherType.Clear, WeatherType.Cloudy, WeatherType.Rain, WeatherType.Clear];
+
+  let prevCloudTime = -1;
+
+  for (const tp of times) {
+    for (const wt of weathers) {
+      weather.setTimePreset(tp);
+      weather.setWeather(wt, false);
+      for (let step = 0; step < 30; step++) {
+        weather.update(0.05, 48, 24, world, 0.4, 14);
+      }
+
+      const dbg = weather.getLightingDebugState();
+      const env = weather.getEnvironmentSnapshot();
+      const fog = scene.fog as THREE.FogExp2;
+
+      // 1. Unified sun/moon direction across sky dome, ocean shader, and PMREM snapshot
+      const skySun = dbg.skyUniforms.uSunDir.value as THREE.Vector3;
+      const skyMoon = dbg.skyUniforms.uMoonDir.value as THREE.Vector3;
+      assert.ok(skySun.distanceTo(weather.sunDirection) < 1e-5);
+      assert.ok(skyMoon.distanceTo(weather.moonDirection) < 1e-5);
+      assert.ok(world.oceanUniforms.uSunDir.value.distanceTo(weather.sunDirection) < 1e-5);
+      assert.ok(world.oceanUniforms.uMoonDir.value.distanceTo(weather.moonDirection) < 1e-5);
+      assert.ok(Math.hypot(env.sunDir.x, env.sunDir.y, env.sunDir.z) > 0.999);
+
+      // 2. Fog & sky horizon colour synchronization across scene.fog, sky dome, ocean, and PMREM
+      const skyBottom = dbg.skyUniforms.uBottomColor.value as THREE.Color;
+      assert.ok(Math.abs(fog.color.r - skyBottom.r) < 1e-5);
+      assert.ok(Math.abs(fog.color.g - skyBottom.g) < 1e-5);
+      assert.ok(Math.abs(fog.color.b - skyBottom.b) < 1e-5);
+      assert.ok(Math.abs(world.oceanUniforms.uSkyHorizon.value.r - fog.color.r) < 1e-5);
+      assert.ok(Math.abs(env.skyHorizon.r - fog.color.r) < 1e-5);
+
+      // 3. Monotonic cloud time across repeated weather & time switches (never rewinds)
+      assert.ok(dbg.cloudState.cloudTime > prevCloudTime, 'cloudTime must advance monotonically');
+      prevCloudTime = dbg.cloudState.cloudTime;
+
+      // 4. Synchronized wet road roughness across NS, EW, and intersections
+      const [ns, ew, inter] = world.roadMaterials;
+      assert.ok(Math.abs(ns.roughness - ew.roughness) < 1e-6);
+      assert.ok(Math.abs(ns.roughness - inter.roughness) < 1e-6);
+
+      // 5. Controlled selective HDR bloom & bounded exposure
+      const post = computeCinematicPostState(
+        {
+          timeHours: weather.timeHours,
+          nightFactor: weather.nightFactor,
+          rainAmount: weather.rainAmount,
+          cloudAmount: weather.cloudAmount,
+          stormDarkness: weather.getStormDarkness(),
+          wantedStars: 0,
+        },
+        highPostCfg,
+      );
+      assert.ok(post.bloomThreshold >= 1.05 && post.bloomThreshold <= 1.45);
+      assert.ok(post.exposure >= 0.98 && post.exposure <= 1.24);
+    }
+  }
+
+  // Verify wet roads dry completely back to dry baseline after Clear weather persists
+  weather.setWeather(WeatherType.Clear, false);
+  for (let i = 0; i < 360; i++) {
+    weather.update(0.05, 48, 24, world, 0, 0);
+  }
+  assert.equal(weather.roadWetness, 0, 'roads must dry cleanly to 0 in Clear weather');
+  assert.equal(world.roadWetnessUniform.value, 0, 'puddle shader wetness uniform must return to 0');
+  assert.ok(Math.abs(world.roadMaterials[0].roughness - 0.78) < 1e-5);
+
+  weather.dispose();
+  world.dispose();
+});
+
+test('Phase 1F: graphics-quality tiers and shadow/resource disposal clean up GPU targets cleanly', () => {
+  const light = new THREE.DirectionalLight(0xffffff, 2.0);
+  const highShadow = getShadowConfigForQuality(GraphicsQuality.High, false);
+  const medShadow = getShadowConfigForQuality(GraphicsQuality.Medium, false);
+  const lowShadow = getShadowConfigForQuality(GraphicsQuality.Low, false);
+  const swShadow = getShadowConfigForQuality(GraphicsQuality.High, true);
+
+  assert.equal(highShadow.enabled, true);
+  assert.equal(highShadow.mapSize, 2048);
+  assert.equal(medShadow.enabled, true);
+  assert.equal(medShadow.mapSize, 1024);
+  assert.equal(lowShadow.enabled, false);
+  assert.equal(swShadow.enabled, false);
+
+  // Verify shadow map disposal when downgrading High -> Low
+  applyShadowConfigToLight(light, highShadow);
+  let shadowMapDisposed = false;
+  (light.shadow as unknown as { map: { dispose: () => void } | null }).map = {
+    dispose: () => {
+      shadowMapDisposed = true;
+    },
+  };
+  applyShadowConfigToLight(light, lowShadow);
+  assert.equal(shadowMapDisposed, true, 'downgrading to Low quality must dispose GPU shadow map');
+  assert.equal(light.shadow.map, null);
+  assert.equal(light.castShadow, false);
+
+  // Verify TimeAndWeatherSystem.dispose() also disposes any allocated shadow map
+  const scene = new THREE.Scene();
+  const weather = new TimeAndWeatherSystem(scene, false);
+  const dbg = weather.getLightingDebugState();
+  let weatherShadowDisposed = false;
+  (dbg.sunLight.shadow as unknown as { map: { dispose: () => void } | null }).map = {
+    dispose: () => {
+      weatherShadowDisposed = true;
+    },
+  };
+  weather.dispose();
+  assert.equal(weatherShadowDisposed, true, 'TimeAndWeatherSystem.dispose must free shadow map');
+
+  // Verify WorldEffectsAndMarkers and shared vehicle resources dispose cleanly without throwing
+  const markers = new WorldEffectsAndMarkers();
+  markers.spawnBurst(0, 1, 0, 8, 0xfbbf24, 5);
+  markers.update(0.05);
+  markers.dispose();
+  disposeSharedVehicleResources();
+});
+
+
 

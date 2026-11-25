@@ -283,10 +283,14 @@ export function applyShadowConfigToLight(
     cam.updateProjectionMatrix();
   }
 
-  if (
-    config.enabled &&
-    (light.shadow.mapSize.width !== config.mapSize ||
-      light.shadow.mapSize.height !== config.mapSize)
+  if (!config.enabled) {
+    if (light.shadow.map) {
+      light.shadow.map.dispose();
+      light.shadow.map = null;
+    }
+  } else if (
+    light.shadow.mapSize.width !== config.mapSize ||
+    light.shadow.mapSize.height !== config.mapSize
   ) {
     light.shadow.mapSize.width = config.mapSize;
     light.shadow.mapSize.height = config.mapSize;

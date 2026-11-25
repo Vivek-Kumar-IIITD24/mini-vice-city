@@ -20,20 +20,72 @@ export interface TrafficSignalVisual {
   ewGreenMat: THREE.MeshStandardMaterial;
 }
 
+export interface OceanAtmosphericUniforms {
+  uTime: { value: number };
+  uSunDir: { value: THREE.Vector3 };
+  uMoonDir: { value: THREE.Vector3 };
+  uSunColor: { value: THREE.Color };
+  uMoonColor: { value: THREE.Color };
+  uSkyTop: { value: THREE.Color };
+  uSkyHorizon: { value: THREE.Color };
+  uNightFactor: { value: number };
+  uCloudCoverage: { value: number };
+  uStormDarkness: { value: number };
+  uRainAmount: { value: number };
+}
+
 export interface BuiltCityWorld {
   root: THREE.Group;
   roadMaterial: THREE.MeshStandardMaterial;
   roadMaterials: THREE.MeshStandardMaterial[];
   wetRoadSurfaces: WetRoadSurface<THREE.MeshStandardMaterial>[];
+  roadWetnessUniform: { value: number };
   emissiveBuildingMaterials: THREE.MeshStandardMaterial[];
   neonTrimMaterials: THREE.MeshStandardMaterial[];
   streetlightBulbMaterial: THREE.MeshStandardMaterial;
   streetPointLights: THREE.PointLight[];
-  oceanUniforms: { uTime: { value: number } };
+  oceanUniforms: OceanAtmosphericUniforms;
   oceanMaterial: THREE.MeshStandardMaterial;
   trafficSignals: TrafficSignalVisual[];
   environmentMeshesForCamera: THREE.Object3D[];
   dispose: () => void;
+}
+
+function attachWetRoadPuddleShader(
+  material: THREE.MeshStandardMaterial,
+  puddleMap: THREE.Texture,
+  wetnessUniform: { value: number },
+): void {
+  material.customProgramCacheKey = () => 'vice_wet_road_puddles_v1';
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uPuddleMap = { value: puddleMap };
+    shader.uniforms.uRoadWetness = wetnessUniform;
+
+    shader.vertexShader =
+      `varying vec3 vRoadWorldPos;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         vRoadWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+      );
+
+    shader.fragmentShader =
+      `uniform sampler2D uPuddleMap;
+       uniform float uRoadWetness;
+       varying vec3 vRoadWorldPos;\n` +
+      shader.fragmentShader.replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+         if (uRoadWetness > 0.005) {
+           float pA = texture2D(uPuddleMap, vRoadWorldPos.xz * 0.036).r;
+           float pB = texture2D(uPuddleMap, vRoadWorldPos.xz * 0.088 + vec2(0.37, 0.61)).r;
+           float puddleMask = smoothstep(0.32, 0.70, pA * 0.70 + pB * 0.30);
+           float puddleRough = mix(0.46, 0.05, puddleMask);
+           roughnessFactor = mix(roughnessFactor, min(roughnessFactor * 1.55, puddleRough), uRoadWetness * 0.9);
+           diffuseColor.rgb *= mix(1.0, 1.0 - puddleMask * 0.24, uRoadWetness);
+         }`,
+      );
+  };
 }
 
 export function buildCityWorld(
@@ -50,28 +102,149 @@ export function buildCityWorld(
   // -------------------------------------------------------
   // 1. EXTENDED COASTAL OCEAN & ISLAND TERRAIN (No Void!)
   // -------------------------------------------------------
-  const oceanUniforms = { uTime: { value: 0 } };
+  const oceanUniforms: OceanAtmosphericUniforms = {
+    uTime: { value: 0 },
+    uSunDir: { value: new THREE.Vector3(-0.82, 0.43, -0.37).normalize() },
+    uMoonDir: { value: new THREE.Vector3(0.5, 0.29, -0.81).normalize() },
+    uSunColor: { value: new THREE.Color(0xffbd70) },
+    uMoonColor: { value: new THREE.Color(0x9cbef5) },
+    uSkyTop: { value: new THREE.Color(0x254f85) },
+    uSkyHorizon: { value: new THREE.Color(0xdeb396) },
+    uNightFactor: { value: 0.18 },
+    uCloudCoverage: { value: 0.28 },
+    uStormDarkness: { value: 0.0 },
+    uRainAmount: { value: 0.0 },
+  };
   const oceanGeo = new THREE.PlaneGeometry(1400, 1400, 64, 64);
   oceanGeo.rotateX(-Math.PI / 2);
   disposables.push(oceanGeo);
 
-  const oceanMaterial = new THREE.MeshStandardMaterial({
+  const oceanMaterial = new THREE.MeshPhysicalMaterial({
     color: 0x0e7490,
-    roughness: 0.16,
-    metalness: 0.35,
-    envMapIntensity: 1.2,
+    roughness: 0.14,
+    metalness: 0.12,
+    ior: 1.333,
+    reflectivity: 0.92,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.12,
+    envMapIntensity: 1.35,
   });
+  oceanMaterial.customProgramCacheKey = () => 'vice_coastal_ocean_v2';
   oceanMaterial.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = oceanUniforms.uTime;
+    shader.uniforms.uSunDir = oceanUniforms.uSunDir;
+    shader.uniforms.uMoonDir = oceanUniforms.uMoonDir;
+    shader.uniforms.uSunColor = oceanUniforms.uSunColor;
+    shader.uniforms.uMoonColor = oceanUniforms.uMoonColor;
+    shader.uniforms.uSkyTop = oceanUniforms.uSkyTop;
+    shader.uniforms.uSkyHorizon = oceanUniforms.uSkyHorizon;
+    shader.uniforms.uNightFactor = oceanUniforms.uNightFactor;
+    shader.uniforms.uCloudCoverage = oceanUniforms.uCloudCoverage;
+    shader.uniforms.uStormDarkness = oceanUniforms.uStormDarkness;
+    shader.uniforms.uRainAmount = oceanUniforms.uRainAmount;
+
     shader.vertexShader =
-      `uniform float uTime;\n` +
+      `uniform float uTime;
+       uniform float uStormDarkness;
+       varying vec3 vOceanWorldPos;
+       varying vec2 vOceanSlope;\n` +
       shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-         float wave1 = sin(transformed.x * 0.045 + uTime * 1.15) * 0.24;
-         float wave2 = cos(transformed.z * 0.055 + uTime * 0.85) * 0.18;
-         transformed.y += wave1 + wave2;`,
+         float swellAmp = 1.0 + uStormDarkness * 0.55;
+         float ph1 = transformed.x * 0.045 + uTime * 1.15;
+         float ph2 = transformed.z * 0.055 + uTime * 0.85;
+         float ph3 = (transformed.x * 0.032 - transformed.z * 0.038) + uTime * 1.45;
+         float wave1 = sin(ph1) * 0.24 * swellAmp;
+         float wave2 = cos(ph2) * 0.18 * swellAmp;
+         float wave3 = sin(ph3) * 0.09 * swellAmp;
+         transformed.y += wave1 + wave2 + wave3;
+         float dHdx = (cos(ph1) * 0.045 * 0.24 + cos(ph3) * 0.032 * 0.09) * swellAmp;
+         float dHdz = (-sin(ph2) * 0.055 * 0.18 - cos(ph3) * 0.038 * 0.09) * swellAmp;
+         vOceanSlope = vec2(dHdx, dHdz);
+         vOceanWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
       );
+
+    shader.fragmentShader =
+      `uniform float uTime;
+       uniform vec3 uSunDir;
+       uniform vec3 uMoonDir;
+       uniform vec3 uSunColor;
+       uniform vec3 uMoonColor;
+       uniform vec3 uSkyTop;
+       uniform vec3 uSkyHorizon;
+       uniform float uNightFactor;
+       uniform float uCloudCoverage;
+       uniform float uStormDarkness;
+       uniform float uRainAmount;
+       varying vec3 vOceanWorldPos;
+       varying vec2 vOceanSlope;\n` +
+      shader.fragmentShader
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+           float beachDist = max(0.0, vOceanWorldPos.x - 148.0);
+           float eastCoastMask = smoothstep(128.0, 150.0, vOceanWorldPos.x) * (1.0 - smoothstep(132.0, 175.0, abs(vOceanWorldPos.z)));
+           float shallowFactor = (1.0 - smoothstep(0.0, 52.0, beachDist)) * eastCoastMask;
+           vec3 shallowDay = vec3(0.038, 0.36, 0.44);
+           vec3 deepDay = vec3(0.012, 0.095, 0.19);
+           vec3 dayWater = mix(deepDay, shallowDay, shallowFactor);
+           vec3 stormWater = vec3(0.015, 0.032, 0.052);
+           vec3 nightWater = mix(vec3(0.004, 0.012, 0.028), vec3(0.009, 0.032, 0.052), shallowFactor * 0.5);
+           vec3 waterAlbedo = mix(mix(dayWater, stormWater, uStormDarkness * 0.72), nightWater, uNightFactor);
+
+           // Soft animated coastal surf foam along the Ocean Drive beach edge
+           float surfWave = sin(vOceanWorldPos.z * 0.16 + uTime * 2.1 + sin(vOceanWorldPos.x * 0.25) * 1.4);
+           float surfBand = (1.0 - smoothstep(1.5, 11.5, beachDist)) * eastCoastMask;
+           float surfFoam = surfBand * smoothstep(-0.15, 0.85, surfWave) * (0.48 + uStormDarkness * 0.25);
+           vec3 foamTint = mix(vec3(0.74, 0.86, 0.90), vec3(0.14, 0.20, 0.30), uNightFactor * 0.82);
+           diffuseColor.rgb = mix(waterAlbedo, foamTint, clamp(surfFoam, 0.0, 0.72));`,
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+           roughnessFactor = clamp(roughness + uStormDarkness * 0.22 + uRainAmount * 0.09, 0.06, 0.56);`,
+        )
+        .replace(
+          '#include <opaque_fragment>',
+          `vec2 wPos = vOceanWorldPos.xz;
+           float chop = 1.0 + uStormDarkness * 0.85;
+           float rx = (
+             cos(wPos.x * 0.26 + wPos.y * 0.14 + uTime * 1.9) * 0.055 +
+             sin(wPos.x * 0.62 - wPos.y * 0.48 - uTime * 2.6) * 0.032 +
+             cos(wPos.x * 1.35 + wPos.y * 1.15 + uTime * 3.4) * 0.016
+           ) * chop;
+           float rz = (
+             sin(wPos.y * 0.29 - wPos.x * 0.16 + uTime * 1.65) * 0.055 +
+             cos(wPos.y * 0.58 + wPos.x * 0.44 - uTime * 2.35) * 0.032 +
+             sin(wPos.y * 1.28 - wPos.x * 1.05 + uTime * 3.1) * 0.016
+           ) * chop;
+           vec3 waterN = normalize(vec3(-vOceanSlope.x + rx, 1.0, -vOceanSlope.y + rz));
+           vec3 viewDirW = normalize(cameraPosition - vOceanWorldPos);
+           float nDotV = max(dot(waterN, viewDirW), 0.0);
+           float fresnel = 0.03 + 0.97 * pow(1.0 - nDotV, 4.5);
+           vec3 reflDir = reflect(-viewDirW, waterN);
+           float reflElev = clamp(reflDir.y, 0.0, 1.0);
+           vec3 skyRefl = mix(uSkyHorizon, uSkyTop, smoothstep(0.0, 0.55, reflElev));
+
+           float skyClear = clamp(1.0 - uStormDarkness * 0.78 - uCloudCoverage * 0.20, 0.12, 1.0);
+           float sunAbove = smoothstep(-0.05, 0.08, uSunDir.y);
+           float lowSunWarm = smoothstep(0.55, 0.04, uSunDir.y) * sunAbove;
+           float sunAlign = max(dot(normalize(reflDir), normalize(uSunDir)), 0.0);
+           skyRefl += uSunColor * pow(sunAlign, 4.5) * (0.35 + 0.95 * lowSunWarm) * skyClear * (1.0 - uNightFactor * 0.85);
+
+           float sunGlintExp = mix(220.0, 40.0, uStormDarkness);
+           float sunGlint = pow(sunAlign, sunGlintExp) * (1.85 + 1.25 * lowSunWarm) * sunAbove * skyClear * (1.0 - uNightFactor * 0.85);
+
+           float moonAbove = smoothstep(0.0, 0.10, uMoonDir.y) * uNightFactor;
+           float moonAlign = max(dot(normalize(reflDir), normalize(uMoonDir)), 0.0);
+           float moonGlint = pow(moonAlign, mix(140.0, 36.0, uStormDarkness)) * 1.55 * moonAbove * skyClear;
+
+           float reflWeight = fresnel * (0.76 - uStormDarkness * 0.24);
+           outgoingLight = mix(outgoingLight, skyRefl * (0.82 + 0.22 * (1.0 - uNightFactor)), reflWeight);
+           outgoingLight += uSunColor * sunGlint + uMoonColor * moonGlint;
+           #include <opaque_fragment>`,
+        );
   };
   disposables.push(oceanMaterial);
 
@@ -216,6 +389,8 @@ export function buildCityWorld(
   roadTexNS.repeat.set(1, 18);
   disposables.push(roadTexNS);
 
+  const roadWetnessUniform = { value: 0 };
+
   const roadMaterial = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: roadTexNS,
@@ -224,6 +399,7 @@ export function buildCityWorld(
     roughness: 0.78,
     metalness: 0.08,
   });
+  attachWetRoadPuddleShader(roadMaterial, textures.asphaltPuddleRoughness, roadWetnessUniform);
   disposables.push(roadMaterial);
 
   const roadTexEW = textures.asphaltMap.clone();
@@ -239,6 +415,7 @@ export function buildCityWorld(
     roughness: 0.78,
     metalness: 0.08,
   });
+  attachWetRoadPuddleShader(roadMatEW, textures.asphaltPuddleRoughness, roadWetnessUniform);
   disposables.push(roadMatEW);
 
   const roadStripNSGeo = new THREE.PlaneGeometry(ROAD_WIDTH, 224);
@@ -274,6 +451,7 @@ export function buildCityWorld(
     roughness: 0.78,
     metalness: 0.08,
   });
+  attachWetRoadPuddleShader(interMat, textures.asphaltPuddleRoughness, roadWetnessUniform);
   disposables.push(interGeo, interMat);
 
   const zebraStripeGeo = new THREE.PlaneGeometry(0.75, 2.6);
@@ -293,9 +471,9 @@ export function buildCityWorld(
     interMat,
   ];
   const wetRoadSurfaces: WetRoadSurface<THREE.MeshStandardMaterial>[] = [
-    createWetRoadSurface('road_ns', roadMaterial, 'asphalt'),
-    createWetRoadSurface('road_ew', roadMatEW, 'asphalt'),
-    createWetRoadSurface('intersections', interMat, 'asphalt'),
+    createWetRoadSurface('road_ns', roadMaterial, 'asphalt', roadWetnessUniform),
+    createWetRoadSurface('road_ew', roadMatEW, 'asphalt', roadWetnessUniform),
+    createWetRoadSurface('intersections', interMat, 'asphalt', roadWetnessUniform),
     createWetRoadSurface('crosswalks', zebraMat, 'marking'),
   ];
 
@@ -337,6 +515,7 @@ export function buildCityWorld(
   stripeTransforms.forEach((m, i) => zebraInst.setMatrixAt(i, m));
   zebraInst.instanceMatrix.needsUpdate = true;
   zebraInst.computeBoundingSphere();
+  disposables.push(zebraInst);
   root.add(zebraInst);
 
   // -------------------------------------------------------
@@ -392,12 +571,17 @@ export function buildCityWorld(
     roughness: 0.88,
     metalness: 0.05,
   });
-  const lobbyGlassMat = new THREE.MeshStandardMaterial({
-    color: 0x1b3248,
-    roughness: 0.12,
-    metalness: 0.5,
-    emissive: 0xffd599,
-    emissiveIntensity: 0.15,
+  const lobbyGlassMat = new THREE.MeshPhysicalMaterial({
+    color: 0x102233,
+    roughness: 0.09,
+    metalness: 0.22,
+    ior: 1.52,
+    reflectivity: 0.96,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.5,
+    emissive: 0x3b5875,
+    emissiveIntensity: 0.03,
   });
   emissiveBuildingMaterials.push(lobbyGlassMat);
   disposables.push(darkMetalMat, roofConcreteMat, lobbyGlassMat);
@@ -410,42 +594,59 @@ export function buildCityWorld(
     const group = new THREE.Group();
     group.position.set(spec.x, 0, spec.z);
 
-    // Choose material template by architectural style
+    // Choose material template by architectural style with per-pixel glass vs concrete/stucco separation
     let mainMat: THREE.MeshStandardMaterial;
     if (spec.style === 'skyscraper' || spec.style === 'landmark') {
-      mainMat = new THREE.MeshStandardMaterial({
+      mainMat = new THREE.MeshPhysicalMaterial({
         color: spec.baseColor,
         map: textures.skyscraperMap,
         emissive: 0xffd699,
         emissiveMap: textures.skyscraperEmissive,
-        emissiveIntensity: 0.25,
-        roughness: 0.24,
-        metalness: 0.55,
+        emissiveIntensity: 0.22,
+        roughness: 1.0,
+        roughnessMap: textures.skyscraperRoughness,
+        metalness: 1.0,
+        metalnessMap: textures.skyscraperMetalness,
+        clearcoat: 0.92,
+        clearcoatMap: textures.skyscraperGlassMask,
+        clearcoatRoughness: 0.07,
+        ior: 1.52,
+        reflectivity: 0.92,
+        envMapIntensity: 1.35,
       });
       emissiveBuildingMaterials.push(mainMat);
     } else if (spec.style === 'warehouse') {
       mainMat = new THREE.MeshStandardMaterial({
         color: spec.baseColor,
         map: textures.warehouseMap,
-        roughness: 0.65,
-        metalness: 0.38,
+        roughness: 0.68,
+        metalness: 0.34,
+        envMapIntensity: 0.8,
       });
     } else if (spec.style === 'parking') {
       mainMat = new THREE.MeshStandardMaterial({
         color: spec.baseColor,
-        roughness: 0.85,
-        metalness: 0.05,
+        roughness: 0.86,
+        metalness: 0.04,
+        envMapIntensity: 0.55,
       });
     } else {
-      // Art Deco Hotel, Club, Villa, Apartment, Shop
-      mainMat = new THREE.MeshStandardMaterial({
+      // Art Deco Hotel, Club, Villa, Apartment, Shop: matte coastal stucco + reflective recessed windows
+      mainMat = new THREE.MeshPhysicalMaterial({
         color: spec.baseColor,
         map: textures.hotelMap,
         emissive: 0xffcf87,
         emissiveMap: textures.hotelEmissive,
-        emissiveIntensity: 0.22,
-        roughness: 0.68,
+        emissiveIntensity: 0.2,
+        roughness: 1.0,
+        roughnessMap: textures.hotelRoughness,
         metalness: 0.08,
+        clearcoat: 0.9,
+        clearcoatMap: textures.hotelGlassMask,
+        clearcoatRoughness: 0.08,
+        ior: 1.5,
+        reflectivity: 0.9,
+        envMapIntensity: 1.15,
       });
       emissiveBuildingMaterials.push(mainMat);
     }
@@ -631,6 +832,7 @@ export function buildCityWorld(
   containerInst.castShadow = true;
   containerInst.receiveShadow = true;
   containerInst.computeBoundingSphere();
+  disposables.push(containerInst);
   root.add(containerInst);
 
   // Two Harbour Gantry Cranes at West Pier
@@ -745,6 +947,7 @@ export function buildCityWorld(
   frondInst.castShadow = true;
   trunkInst.computeBoundingSphere();
   frondInst.computeBoundingSphere();
+  disposables.push(trunkInst, frondInst);
   root.add(trunkInst, frondInst);
 
   // Park Broadleaf Trees (Coral Heights)
@@ -814,6 +1017,7 @@ export function buildCityWorld(
   poleInst.computeBoundingSphere();
   armInst.computeBoundingSphere();
   bulbInst.computeBoundingSphere();
+  disposables.push(poleInst, armInst, bulbInst);
   root.add(poleInst, armInst, bulbInst);
 
   // 4 Key Night-Time PointLights in central hubs (within 4-6 unshadowed budget!)
@@ -899,6 +1103,7 @@ export function buildCityWorld(
     roadMaterial,
     roadMaterials,
     wetRoadSurfaces,
+    roadWetnessUniform,
     emissiveBuildingMaterials,
     neonTrimMaterials,
     streetlightBulbMaterial,
