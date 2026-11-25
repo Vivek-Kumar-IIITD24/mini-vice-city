@@ -58,6 +58,7 @@ import {
   stepMissionProgress,
 } from '../missions/missionData';
 import { WorldEffectsAndMarkers } from '../missions/missionMarkers';
+import { CinematicPostPipeline } from '../rendering/postProcessing';
 
 interface DrivableVehicleEntity {
   instanceId: string;
@@ -96,6 +97,7 @@ export class GameEngine {
   private readonly pedestrians: PedestrianSystem;
   private readonly police: PoliceSystem;
   private readonly timeWeather: TimeAndWeatherSystem;
+  private readonly postPipeline: CinematicPostPipeline;
   private readonly sound: SoundEngine;
   private readonly markers: WorldEffectsAndMarkers;
   private readonly input: InputManager;
@@ -183,6 +185,18 @@ export class GameEngine {
       this.saveData.settings.dynamicWeather,
     );
 
+    // Modular Cinematic Post-Processing (Selective HDR Bloom + Time/Weather Colour Grading + OutputPass)
+    this.postPipeline = new CinematicPostPipeline(
+      this.renderer,
+      this.scene,
+      this.cameraRig.camera,
+      this.isSoftwareGl,
+      this.saveData.settings.graphics,
+    );
+
+    // Sync renderer, post-processing composer, and directional shadow quality
+    this.applyGraphicsSettings(this.saveData.settings);
+
     // Audio
     this.sound = new SoundEngine(this.saveData.settings);
 
@@ -239,7 +253,7 @@ export class GameEngine {
     this.setGameState(GameState.Title);
     this.cameraRig.updateTitleTour(0.016);
     this.timeWeather.update(0.016, 60, 0, this.world);
-    this.renderer.render(this.scene, this.cameraRig.camera);
+    this.renderFrame(0.016);
     this.emitHudSnapshot();
 
     // Start loop
@@ -462,14 +476,21 @@ export class GameEngine {
     if (this.timeWeather) {
       if (this.isSoftwareGl || settings.graphics === GraphicsQuality.Low) {
         this.renderer.shadowMap.enabled = false;
-        this.timeWeather.setShadowQuality(false, 512);
+        this.timeWeather.setShadowQuality(false, 512, settings.graphics);
       } else if (settings.graphics === GraphicsQuality.Medium) {
         this.renderer.shadowMap.enabled = true;
-        this.timeWeather.setShadowQuality(true, 1024);
+        this.timeWeather.setShadowQuality(true, 1024, settings.graphics);
       } else {
         this.renderer.shadowMap.enabled = true;
-        this.timeWeather.setShadowQuality(true, 2048);
+        this.timeWeather.setShadowQuality(true, 2048, settings.graphics);
       }
+    }
+
+    if (this.postPipeline) {
+      const w = this.mountEl.clientWidth || window.innerWidth;
+      const h = this.mountEl.clientHeight || window.innerHeight;
+      this.postPipeline.setQuality(settings.graphics);
+      this.postPipeline.setSize(w, h, targetPr);
     }
   }
 
@@ -697,8 +718,20 @@ export class GameEngine {
     }
 
     this.input.endFrame();
-    this.renderer.render(this.scene, this.cameraRig.camera);
+    this.renderFrame(dt);
     this.scheduleNextFrame();
+  }
+
+  private renderFrame(dt: number): void {
+    this.postPipeline.update(dt, {
+      timeHours: this.timeWeather.timeHours,
+      nightFactor: this.timeWeather.nightFactor,
+      rainAmount: this.timeWeather.rainAmount,
+      cloudAmount: this.timeWeather.cloudAmount,
+      stormDarkness: this.timeWeather.getStormDarkness(),
+      wantedStars: this.police.wanted.stars,
+    });
+    this.postPipeline.render(dt);
   }
 
   private stepPlaying(dt: number): void {
@@ -903,11 +936,11 @@ export class GameEngine {
       }
 
       const isDriven = v === this.activeVehicle;
-      v.rig.headlightMat.emissiveIntensity = (isDriven ? 0.9 : 0.2) + nightFactor * 2.1;
+      v.rig.headlightMat.emissiveIntensity = (isDriven ? 1.35 : 0.2) + nightFactor * 2.4;
       (v.rig.headlightBeam.material as THREE.MeshBasicMaterial).opacity =
         isDriven ? 0.06 + nightFactor * 0.28 : nightFactor * 0.08;
       v.rig.brakeLightMat.emissiveIntensity =
-        v.body.braking || v.body.reversing ? 2.6 : 0.3 + nightFactor * 0.5;
+        v.body.braking || v.body.reversing ? 3.2 : (isDriven ? 0.85 : 0.25) + nightFactor * 1.15;
 
       if (!this.activeVehicle) {
         const d = dist2D(this.player.x, this.player.z, v.body.x, v.body.z);
@@ -942,7 +975,7 @@ export class GameEngine {
     });
 
     // Update living city systems
-    this.timeWeather.update(dt, focusX, focusZ, this.world);
+    this.timeWeather.update(dt, focusX, focusZ, this.world, focusHeading, currentSpeed);
     this.traffic.update(dt, focusX, focusZ, nightFactor, this.world.trafficSignals);
 
     const startledPed = this.pedestrians.update(
@@ -1298,6 +1331,9 @@ export class GameEngine {
     const h = this.mountEl.clientHeight || window.innerHeight;
     this.cameraRig.resize(w / Math.max(1, h));
     this.renderer.setSize(w, h);
+    if (this.postPipeline) {
+      this.postPipeline.setSize(w, h, this.renderer.getPixelRatio());
+    }
   }
 
   public dispose(): void {
@@ -1316,6 +1352,7 @@ export class GameEngine {
     this.timeWeather.dispose();
     this.markers.dispose();
     for (const v of this.vehicles) v.rig.dispose();
+    this.postPipeline.dispose();
     this.envRT.dispose();
     this.renderer.dispose();
     this.mountEl.innerHTML = '';

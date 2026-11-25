@@ -327,10 +327,12 @@ export class PoliceSystem {
         u.rig.wheels[w].rotation.x -= spin;
       }
       if (u.rig.policeRedMat && u.rig.policeBlueMat) {
-        u.rig.policeRedMat.emissiveIntensity = redOn ? 3.5 : 0.15;
-        u.rig.policeBlueMat.emissiveIntensity = redOn ? 0.15 : 3.5;
+        u.rig.policeRedMat.emissiveIntensity = redOn ? 4.2 : 0.15;
+        u.rig.policeBlueMat.emissiveIntensity = redOn ? 0.15 : 4.2;
       }
-      u.rig.headlightMat.emissiveIntensity = 0.9 + params.nightFactor * 1.8;
+      u.rig.headlightMat.emissiveIntensity = 1.2 + params.nightFactor * 2.2;
+      u.rig.brakeLightMat.emissiveIntensity =
+        u.speed < 4.5 ? 2.95 : 0.75 + params.nightFactor * 1.15;
       (u.rig.headlightBeam.material as THREE.MeshBasicMaterial).opacity =
         0.08 + params.nightFactor * 0.25;
     }

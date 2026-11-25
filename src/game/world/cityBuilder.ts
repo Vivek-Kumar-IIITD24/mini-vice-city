@@ -6,6 +6,10 @@ import {
   ROAD_WIDTH,
 } from './cityData';
 import { ProceduralTextureSet } from './textures';
+import {
+  createWetRoadSurface,
+  WetRoadSurface,
+} from './wetRoadSync';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -19,6 +23,8 @@ export interface TrafficSignalVisual {
 export interface BuiltCityWorld {
   root: THREE.Group;
   roadMaterial: THREE.MeshStandardMaterial;
+  roadMaterials: THREE.MeshStandardMaterial[];
+  wetRoadSurfaces: WetRoadSurface<THREE.MeshStandardMaterial>[];
   emissiveBuildingMaterials: THREE.MeshStandardMaterial[];
   neonTrimMaterials: THREE.MeshStandardMaterial[];
   streetlightBulbMaterial: THREE.MeshStandardMaterial;
@@ -280,6 +286,18 @@ export function buildCityWorld(
     polygonOffsetUnits: -1,
   });
   disposables.push(zebraStripeGeo, zebraMat);
+
+  const roadMaterials: THREE.MeshStandardMaterial[] = [
+    roadMaterial,
+    roadMatEW,
+    interMat,
+  ];
+  const wetRoadSurfaces: WetRoadSurface<THREE.MeshStandardMaterial>[] = [
+    createWetRoadSurface('road_ns', roadMaterial, 'asphalt'),
+    createWetRoadSurface('road_ew', roadMatEW, 'asphalt'),
+    createWetRoadSurface('intersections', interMat, 'asphalt'),
+    createWetRoadSurface('crosswalks', zebraMat, 'marking'),
+  ];
 
   const stripeTransforms: THREE.Matrix4[] = [];
   const dummy = new THREE.Object3D();
@@ -879,6 +897,8 @@ export function buildCityWorld(
   return {
     root,
     roadMaterial,
+    roadMaterials,
+    wetRoadSurfaces,
     emissiveBuildingMaterials,
     neonTrimMaterials,
     streetlightBulbMaterial,

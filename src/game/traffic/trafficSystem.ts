@@ -134,14 +134,14 @@ export class TrafficSystem {
       this.nsGreen = !this.nsGreen;
       for (let i = 0; i < signals.length; i++) {
         const s = signals[i];
-        s.nsGreenMat.emissiveIntensity = this.nsGreen ? 1.8 : 0.05;
-        s.nsRedMat.emissiveIntensity = this.nsGreen ? 0.05 : 1.8;
-        s.ewGreenMat.emissiveIntensity = this.nsGreen ? 0.05 : 1.8;
-        s.ewRedMat.emissiveIntensity = this.nsGreen ? 1.8 : 0.05;
+        s.nsGreenMat.emissiveIntensity = this.nsGreen ? 2.2 : 0.05;
+        s.nsRedMat.emissiveIntensity = this.nsGreen ? 0.05 : 2.2;
+        s.ewGreenMat.emissiveIntensity = this.nsGreen ? 0.05 : 2.2;
+        s.ewRedMat.emissiveIntensity = this.nsGreen ? 2.2 : 0.05;
       }
     }
 
-    const hlIntensity = 0.4 + nightFactor * 2.1;
+    const hlIntensity = 0.25 + nightFactor * 2.2;
     const beamOpacity = nightFactor * 0.22;
 
     for (let i = 0; i < this.cars.length; i++) {
@@ -260,7 +260,7 @@ export class TrafficSystem {
       }
       c.rig.headlightMat.emissiveIntensity = hlIntensity;
       (c.rig.headlightBeam.material as THREE.MeshBasicMaterial).opacity = beamOpacity;
-      c.rig.brakeLightMat.emissiveIntensity = shouldStop ? 2.2 : 0.35 + nightFactor * 0.5;
+      c.rig.brakeLightMat.emissiveIntensity = shouldStop ? 2.85 : 0.4 + nightFactor * 0.95;
     }
   }
 

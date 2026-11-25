@@ -15,6 +15,35 @@ export interface VehicleRig {
   dispose: () => void;
 }
 
+let cachedBeamTexture: THREE.Texture | null = null;
+
+function getSoftHeadlightBeamTexture(): THREE.Texture | null {
+  if (cachedBeamTexture) return cachedBeamTexture;
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, 128, 128);
+  // Left & right soft elliptical headlight cones (bright near bumper at bottom y=110, fading forward toward y=12)
+  for (const cx of [44, 84]) {
+    const grad = ctx.createRadialGradient(cx, 102, 4, cx, 64, 56);
+    grad.addColorStop(0.0, 'rgba(255, 248, 225, 0.95)');
+    grad.addColorStop(0.35, 'rgba(255, 244, 214, 0.48)');
+    grad.addColorStop(0.72, 'rgba(255, 240, 200, 0.12)');
+    grad.addColorStop(1.0, 'rgba(255, 240, 200, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  cachedBeamTexture = tex;
+  return tex;
+}
+
 /**
  * Builds a composite 10-14 part procedural 3D vehicle pivoted at bottom-center (y = 0).
  * Local forward direction is -Z.
@@ -237,11 +266,12 @@ export function createVehicleMesh(
     }
   }
 
-  // Subtle projected headlight light-beam cone on road ahead (toggled at dusk/night)
-  const beamGeo = new THREE.PlaneGeometry(w * 2.2, 9.5);
+  // Subtle projected dual-headlight light-beam pool on road ahead (soft gradient falloff at edges)
+  const beamGeo = new THREE.PlaneGeometry(w * 2.3, 9.5);
   beamGeo.rotateX(-Math.PI / 2);
   const beamMat = new THREE.MeshBasicMaterial({
     color: 0xfff4d6,
+    map: getSoftHeadlightBeamTexture(),
     transparent: true,
     opacity: 0,
     depthWrite: false,
