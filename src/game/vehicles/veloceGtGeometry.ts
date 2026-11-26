@@ -312,7 +312,6 @@ export function buildVeloceBodyShellGeometry(): THREE.BufferGeometry {
   const leftRings: Array<Array<[number, number, number]>> = [];
 
   for (const s of samples) {
-    const h = Math.max(0.06, s.beltY - s.sillY);
     const sideScoopIndent = bell(s.z, 0.54, 0.46) * 0.062;
     const archLipFlare = s.inFrontArch || s.inRearArch ? 0.022 : 0;
 
@@ -380,16 +379,33 @@ function buildEndCapBand(
   const rows = 5;
   const rings: Array<Array<[number, number, number]>> = [];
   const startY = Math.max(s.sillY, minSillY);
+  const outerDeckX = s.halfWidthBelt * 0.93;
+
+  // Match the exact side-wall cross-section widths of the lofted body shell at each height fraction v
+  const rowWidths = [
+    s.halfWidthLower,
+    s.halfWidthMid,
+    s.halfWidthMid,
+    s.halfWidthBelt + 0.02,
+    outerDeckX,
+  ];
+  const rowYFracs = [0.0, 0.34, 0.66, 0.96, 1.0];
 
   for (let r = 0; r < rows; r++) {
-    const v = r / (rows - 1);
-    const y = startY + (s.deckY - startY) * v;
-    const widthAtRow =
-      s.halfWidthLower + (s.halfWidthBelt * 0.93 - s.halfWidthLower) * Math.sin(v * Math.PI * 0.65);
+    const v = rowYFracs[r];
+    const widthAtRow = rowWidths[r];
     const rowPts: Array<[number, number, number]> = [];
     for (let c = 0; c < cols; c++) {
       const u = (c / (cols - 1)) * 2 - 1;
+      const absU = Math.abs(u);
       const x = u * widthAtRow;
+
+      // Match the exact sculpted top deck contour across X so nose and Kammback tail weld seamlessly
+      const topYAtU = isFront
+        ? sampleFrontDeckSurfaceY(Math.min(outerDeckX, absU * outerDeckX), s.z)
+        : s.centerDeckY + (s.deckY - s.centerDeckY) * (absU * absU * (3 - 2 * absU));
+      const y = startY + (topYAtU - startY) * v;
+
       const curveBulge =
         (1 - u * u) * (isFront ? -bulgeAmt : bulgeAmt) * Math.sin(v * Math.PI * 0.85 + 0.15);
       const z = s.z + (tipZ - s.z) * (1 - u * u) + curveBulge;
@@ -877,7 +893,7 @@ export function buildVeloceRearWingGeometry(): {
       bevelSegments: 2,
     });
     g.rotateY(-Math.PI / 2);
-    g.translate(side * 0.87 + (side > 0 ? 0.011 : -0.011), 1.045, 2.055);
+    g.translate(side * 0.87 + 0.011, 1.045, 2.055);
     return g;
   };
   const endplates = mergeSimpleGeometries([makeEndplate(-1), makeEndplate(1)]);

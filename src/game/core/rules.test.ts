@@ -23,6 +23,7 @@ import {
   VELOCE_GT_DIMS,
   buildVeloceBodyShellGeometry,
   buildVeloceRearGlassGeometry,
+  buildVeloceRearWingGeometry,
   buildVeloceRoofGeometry,
   buildVeloceSideWindowGeometry,
   buildVeloceWheelParts,
@@ -1277,8 +1278,18 @@ test('Phase 2A: Veloce GT custom sculpted geometries have finite vertices, valid
   assert.ok(Math.abs(fSize.y - VELOCE_GT_DIMS.wheelRadius * 2) < 0.02, 'front tire outer diameter matches wheelRadius');
   assert.ok(rSize.x > fSize.x + 0.03, 'rear tires should be wider than front tires (staggered sports fitment)');
 
+  // Verify rear wing endplates sit symmetrically flush with wing blade tips
+  const rearWing = buildVeloceRearWingGeometry();
+  rearWing.endplates.computeBoundingBox();
+  const epBox = rearWing.endplates.boundingBox!;
+  assert.ok(
+    Math.abs(epBox.min.x + epBox.max.x) < 1e-4,
+    `rear wing endplates must be laterally symmetric, got [${epBox.min.x}, ${epBox.max.x}]`,
+  );
+
   for (const g of [
     body, roof, windshield, rearGlass, sideL, sideR,
+    rearWing.blade, rearWing.endplates, rearWing.pylons,
     frontWheel.tireGeo, frontWheel.rimAlloyGeo, frontWheel.hubDarkGeo, frontWheel.lugGeo, frontWheel.rotorGeo, frontWheel.caliperGeo,
     rearWheel.tireGeo, rearWheel.rimAlloyGeo, rearWheel.hubDarkGeo, rearWheel.lugGeo, rearWheel.rotorGeo, rearWheel.caliperGeo,
   ]) {
@@ -1317,6 +1328,24 @@ test('Phase 2A: Veloce GT VehicleRig preserves physics/wheel pivots, transparent
       lod.levels[1].object.children.length < lod.levels[0].object.children.length,
     'medium LOD level should reduce detail relative to near LOD',
   );
+
+  // Verify full Veloce GT rig sits cleanly on ground (no wheel-well liners piercing y < 0)
+  // and cockpit dashboard stays below windshield with display screens proud on dash face
+  rig1.root.updateMatrixWorld(true);
+  const rigBox = new THREE.Box3().setFromObject(rig1.root);
+  const bodyBox = new THREE.Box3().setFromObject(rig1.bodyGroup);
+  assert.ok(rigBox.min.y >= -0.002, `Veloce GT must not pierce ground plane y=0, got min.y=${rigBox.min.y}`);
+  assert.ok(bodyBox.min.y >= 0.1, `Veloce GT body & liners must stay above ground clearance, got min.y=${bodyBox.min.y}`);
+
+  const dashMesh = lod.levels[0].object.children[3] as THREE.Mesh;
+  const clusterScreen = lod.levels[0].object.children[6] as THREE.Mesh;
+  const centerScreen = lod.levels[0].object.children[7] as THREE.Mesh;
+  dashMesh.geometry.computeBoundingBox();
+  clusterScreen.geometry.computeBoundingBox();
+  centerScreen.geometry.computeBoundingBox();
+  assert.ok(dashMesh.geometry.boundingBox!.max.y < 0.96, 'dashboard binnacle must clear curved windshield');
+  assert.ok(clusterScreen.geometry.boundingBox!.max.z > -0.29, 'instrument cluster screen must sit proud of dash face');
+  assert.ok(centerScreen.geometry.boundingBox!.max.z > -0.29, 'center infotainment screen must sit proud of dash face');
 
   // Verify cached geometry reuse between multiple Veloce GT instances
   const bodyMesh1 = rig1.bodyGroup.children[0] as THREE.Mesh;

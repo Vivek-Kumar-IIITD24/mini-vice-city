@@ -306,7 +306,7 @@ function buildVeloceEmblemTexture(): THREE.Texture | null {
 function getSharedCache(): VeloceGtSharedCache {
   if (sharedCache) return sharedCache;
 
-  const { frontAxleZ, rearAxleZ, wheelRadius, frontArchRadius, rearArchRadius } = VELOCE_GT_DIMS;
+  const { frontAxleZ, rearAxleZ, wheelRadius } = VELOCE_GT_DIMS;
 
   // 1. Primary sculpted exterior shell & greenhouse
   const bodyShell = buildVeloceBodyShellGeometry();
@@ -373,25 +373,44 @@ function getSharedCache(): VeloceGtSharedCache {
   midFloorPan.translate(0, 0.195, 0.02);
   linerParts.push(midFloorPan);
 
-  const wellPlacements: Array<{ x: number; z: number; r: number; w: number; wallX: number }> = [
-    { x: -0.71, z: frontAxleZ, r: wheelRadius + 0.025, w: 0.25, wallX: -0.56 },
-    { x: 0.71, z: frontAxleZ, r: wheelRadius + 0.025, w: 0.25, wallX: 0.56 },
-    { x: -0.72, z: rearAxleZ, r: wheelRadius + 0.032, w: 0.28, wallX: -0.57 },
-    { x: 0.72, z: rearAxleZ, r: wheelRadius + 0.032, w: 0.28, wallX: 0.57 },
+  const wellPlacements: Array<{ x: number; z: number; r: number; w: number; wallX: number; side: -1 | 1 }> = [
+    { x: -0.71, z: frontAxleZ, r: wheelRadius + 0.032, w: 0.28, wallX: -0.56, side: -1 },
+    { x: 0.71, z: frontAxleZ, r: wheelRadius + 0.032, w: 0.28, wallX: 0.56, side: 1 },
+    { x: -0.72, z: rearAxleZ, r: wheelRadius + 0.04, w: 0.30, wallX: -0.57, side: -1 },
+    { x: 0.72, z: rearAxleZ, r: wheelRadius + 0.04, w: 0.30, wallX: 0.57, side: 1 },
   ];
   for (const wp of wellPlacements) {
-    // Upper arched fender liner shell tucked safely outside the tyre sweep and below upper fender skin
-    const archShell = new THREE.CylinderGeometry(wp.r, wp.r, wp.w, 16, 1, false, 0, Math.PI);
+    // Upper arched fender liner shell arching cleanly over +Y (y >= wheelRadius - 0.015)
+    // Flip winding so concave inner surface normals face toward the wheel (visible from outside)
+    const archShell = new THREE.CylinderGeometry(wp.r, wp.r, wp.w, 16, 1, true, 0, Math.PI);
     archShell.rotateZ(Math.PI / 2);
-    archShell.rotateX(-Math.PI / 2);
+    const archIdx = archShell.getIndex();
+    if (archIdx) {
+      const arr = archIdx.array as Uint16Array | Uint32Array;
+      for (let i = 0; i < arr.length; i += 3) {
+        const tmp = arr[i + 1];
+        arr[i + 1] = arr[i + 2];
+        arr[i + 2] = tmp;
+      }
+      archIdx.needsUpdate = true;
+    }
     archShell.translate(wp.x, wheelRadius - 0.015, wp.z);
+    archShell.computeVertexNormals();
     linerParts.push(archShell);
 
-    // Recessed inner bulkhead wall behind wheel (keeps >=3cm clearance at full steering lock)
-    const innerWall = new THREE.CylinderGeometry(wp.r * 0.94, wp.r * 0.94, 0.035, 14);
-    innerWall.rotateZ(Math.PI / 2);
-    innerWall.translate(wp.wallX, wheelRadius - 0.015, wp.z);
-    linerParts.push(innerWall);
+    // Recessed inner bulkhead wall behind wheel (upper half-arch + lower skirt trimmed safely above y=0.165)
+    const innerArchWall = new THREE.CircleGeometry(wp.r * 0.96, 16, 0, Math.PI);
+    innerArchWall.rotateY(wp.side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    innerArchWall.translate(wp.wallX, wheelRadius - 0.015, wp.z);
+    innerArchWall.computeVertexNormals();
+    linerParts.push(innerArchWall);
+
+    const lowerWallH = Math.max(0.05, wheelRadius - 0.015 - 0.165);
+    const innerLowerWall = new THREE.PlaneGeometry(wp.r * 1.9, lowerWallH);
+    innerLowerWall.rotateY(wp.side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    innerLowerWall.translate(wp.wallX, 0.165 + lowerWallH * 0.5, wp.z);
+    innerLowerWall.computeVertexNormals();
+    linerParts.push(innerLowerWall);
   }
   const underbodyAndLiners = mergeSimpleGeometries(linerParts);
 
@@ -566,20 +585,20 @@ function getSharedCache(): VeloceGtSharedCache {
   seatAccentParts.push(gearShift);
   const interiorSeatAccents = mergeSimpleGeometries(seatAccentParts);
 
-  // Sculpted wrap-around dashboard + driver instrument binnacle hood
+  // Sculpted wrap-around dashboard + driver instrument binnacle hood (stays cleanly below windshield glass)
   const dashParts: THREE.BufferGeometry[] = [];
-  const dashMain = new THREE.BoxGeometry(1.38, 0.24, 0.44);
+  const dashMain = new THREE.BoxGeometry(1.38, 0.24, 0.34);
   dashMain.rotateX(0.08);
-  dashMain.translate(0, 0.72, -0.44);
+  dashMain.translate(0, 0.715, -0.46);
   dashParts.push(dashMain);
-  const dashBinnacle = new THREE.CylinderGeometry(0.18, 0.20, 0.36, 12, 1, false, 0, Math.PI);
+  const dashBinnacle = new THREE.CylinderGeometry(0.105, 0.12, 0.26, 12, 1, false, 0, Math.PI);
   dashBinnacle.rotateZ(Math.PI / 2);
   dashBinnacle.rotateY(Math.PI / 2);
-  dashBinnacle.translate(-0.36, 0.81, -0.42);
+  dashBinnacle.translate(-0.36, 0.805, -0.37);
   dashParts.push(dashBinnacle);
-  const steerCol = new THREE.CylinderGeometry(0.035, 0.042, 0.28, 10);
+  const steerCol = new THREE.CylinderGeometry(0.032, 0.04, 0.22, 10);
   steerCol.rotateX(Math.PI / 2 - 0.26);
-  steerCol.translate(-0.36, 0.74, -0.34);
+  steerCol.translate(-0.36, 0.75, -0.31);
   dashParts.push(steerCol);
   const interiorDash = mergeSimpleGeometries(dashParts);
 
@@ -587,18 +606,18 @@ function getSharedCache(): VeloceGtSharedCache {
   const swParts: THREE.BufferGeometry[] = [];
   const swRim = new THREE.TorusGeometry(0.155, 0.019, 10, 22);
   swRim.rotateX(-0.28);
-  swRim.translate(-0.36, 0.785, -0.22);
+  swRim.translate(-0.36, 0.785, -0.20);
   swParts.push(swRim);
   const swHub = new THREE.CylinderGeometry(0.048, 0.048, 0.035, 12);
   swHub.rotateX(Math.PI / 2 - 0.28);
-  swHub.translate(-0.36, 0.785, -0.225);
+  swHub.translate(-0.36, 0.785, -0.205);
   swParts.push(swHub);
   for (const ang of [0, Math.PI, -Math.PI / 2]) {
     const spoke = new THREE.BoxGeometry(0.13, 0.022, 0.018);
     spoke.translate(0.065, 0, 0);
     spoke.rotateZ(ang);
     spoke.rotateX(-0.28);
-    spoke.translate(-0.36, 0.785, -0.225);
+    spoke.translate(-0.36, 0.785, -0.205);
     swParts.push(spoke);
   }
   const interiorSteeringWheel = mergeSimpleGeometries(swParts);
@@ -606,17 +625,17 @@ function getSharedCache(): VeloceGtSharedCache {
   // Crimson 12-o'clock racing band on steering wheel top
   const swMarker = new THREE.BoxGeometry(0.026, 0.042, 0.042);
   swMarker.rotateX(-0.28);
-  swMarker.translate(-0.36, 0.935, -0.26);
+  swMarker.translate(-0.36, 0.935, -0.24);
   const interiorSteeringAccents = swMarker;
 
-  // Illuminated driver instrument cluster + angled central infotainment touchscreen
-  const interiorClusterScreen = new THREE.PlaneGeometry(0.28, 0.105);
-  interiorClusterScreen.rotateX(-0.18);
-  interiorClusterScreen.translate(-0.36, 0.805, -0.38);
+  // Illuminated driver instrument cluster + angled central infotainment touchscreen (mounted proud on dash face)
+  const interiorClusterScreen = new THREE.PlaneGeometry(0.24, 0.095);
+  interiorClusterScreen.rotateX(-0.14);
+  interiorClusterScreen.translate(-0.36, 0.815, -0.278);
 
-  const interiorCenterScreen = new THREE.PlaneGeometry(0.24, 0.15);
-  interiorCenterScreen.rotateX(-0.22);
-  interiorCenterScreen.translate(0, 0.775, -0.32);
+  const interiorCenterScreen = new THREE.PlaneGeometry(0.22, 0.14);
+  interiorCenterScreen.rotateX(-0.18);
+  interiorCenterScreen.translate(0, 0.765, -0.275);
 
   // Interior rear-view mirror suspended from windshield header
   const rmParts: THREE.BufferGeometry[] = [];
