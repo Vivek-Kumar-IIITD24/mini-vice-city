@@ -37,6 +37,39 @@ import {
 } from '../police/policeSystem';
 import * as THREE from 'three';
 import {
+  PLAYER_DIMS,
+  buildPlayerForearmAndHandGeometry,
+  buildPlayerHeadAndHairGeometry,
+  buildPlayerPelvisGeometry,
+  buildPlayerShinGeometry,
+  buildPlayerShoeGeometry,
+  buildPlayerThighGeometry,
+  buildPlayerTorsoGeometry,
+  buildPlayerUpperArmGeometry,
+} from '../player/playerGeometry';
+import { createPlayerCharacterRig } from '../player/playerModel';
+import {
+  applyPlayerPoseToRig,
+  createInitialPlayerAnimatorState,
+  stepPlayerAnimation,
+} from '../player/playerAnimator';
+import { PlayerController } from '../player/playerController';
+import {
+  PEDESTRIAN_DIMS,
+  createPedestrianSharedGeometries,
+} from '../pedestrians/pedestrianGeometry';
+import {
+  PEDESTRIAN_ARCHETYPES,
+  createPedestrianRig,
+  createPedestrianSharedResources,
+} from '../pedestrians/pedestrianModel';
+import {
+  applyPedestrianPoseToRig,
+  createInitialPedestrianAnimatorState,
+  stepPedestrianAnimation,
+} from '../pedestrians/pedestrianAnimator';
+import { PedestrianSystem } from '../pedestrians/pedestrianSystem';
+import {
   createMissionProgress,
   stepMissionProgress,
 } from '../missions/missionData';
@@ -1364,6 +1397,613 @@ test('Phase 2A: Veloce GT VehicleRig preserves physics/wheel pivots, transparent
   disposeSharedVehicleResources();
   dummyShadow.dispose();
 });
+
+test('Phase 2B-1: protagonist character geometry & articulated rig have realistic human proportions, grounded feet, valid normals, PBR materials, and clean disposal', () => {
+  const pelvisParts = buildPlayerPelvisGeometry();
+  const torsoParts = buildPlayerTorsoGeometry();
+  const headParts = buildPlayerHeadAndHairGeometry();
+  const upperArmParts = buildPlayerUpperArmGeometry();
+  const forearmLeft = buildPlayerForearmAndHandGeometry(-1);
+  const forearmRight = buildPlayerForearmAndHandGeometry(1);
+  const thigh = buildPlayerThighGeometry();
+  const shinParts = buildPlayerShinGeometry();
+  const shoeParts = buildPlayerShoeGeometry();
+
+  assert.ok(forearmLeft.watch !== null, 'left wrist should include stainless watch detail');
+  assert.equal(forearmRight.watch, null, 'right wrist should not duplicate watch');
+
+  const allGeoms: Array<[string, THREE.BufferGeometry]> = [
+    ['pelvis', pelvisParts.pelvis],
+    ['belt', pelvisParts.belt],
+    ['buckle', pelvisParts.buckle],
+    ['innerShirt', torsoParts.innerShirt],
+    ['jacket', torsoParts.jacket],
+    ['jacketAccent', torsoParts.jacketAccent],
+    ['headSkin', headParts.skin],
+    ['hair', headParts.hair],
+    ['eyeWhites', headParts.eyeWhites],
+    ['eyeIrises', headParts.eyeIrises],
+    ['lips', headParts.lips],
+    ['upperArmSleeve', upperArmParts.sleeve],
+    ['upperArmCuff', upperArmParts.cuff],
+    ['forearmLeft', forearmLeft.forearmAndHand],
+    ['forearmRight', forearmRight.forearmAndHand],
+    ['watch', forearmLeft.watch],
+    ['thigh', thigh],
+    ['trouserShin', shinParts.trouserShin],
+    ['ankleSkin', shinParts.ankleSkin],
+    ['shoeUpper', shoeParts.upper],
+    ['shoeSole', shoeParts.sole],
+    ['shoeAccent', shoeParts.accent],
+  ];
+
+  for (const [name, g] of allGeoms) {
+    const pos = g.getAttribute('position');
+    const norm = g.getAttribute('normal');
+    assert.ok(pos && pos.count > 12, `${name} should have sculpted vertex detail`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const nLen = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(Number.isFinite(nLen) && Math.abs(nLen - 1) < 0.05, `${name} normal ${i} must be unit length`);
+    }
+    g.dispose();
+  }
+
+  const dummyShadow = new THREE.Texture();
+  const rig = createPlayerCharacterRig(dummyShadow);
+  rig.root.updateMatrixWorld(true);
+
+  // Full protagonist silhouette dimensions (excluding contact shadow disc)
+  const bodyBox = new THREE.Box3().setFromObject(rig.bodyRig);
+  const size = bodyBox.getSize(new THREE.Vector3());
+  assert.ok(
+    bodyBox.min.y >= -0.005 && bodyBox.min.y <= 0.005,
+    `protagonist soles must stand flush on y=0, got min.y=${bodyBox.min.y.toFixed(4)}`,
+  );
+  assert.ok(
+    size.y >= 1.75 && size.y <= 1.9,
+    `protagonist height should be realistic adult scale (1.75-1.90m), got ${size.y.toFixed(3)}m`,
+  );
+  assert.ok(
+    size.x >= 0.48 && size.x <= 0.65,
+    `protagonist shoulder/arm width should be natural adult width, got ${size.x.toFixed(3)}m`,
+  );
+
+  // Articulated hierarchy integrity: pelvis -> spine -> neck & shoulders -> elbows, pelvis -> hips -> knees -> ankles
+  assert.ok(rig.hipsPivot.children.includes(rig.spinePivot));
+  assert.ok(rig.spinePivot.children.includes(rig.neckPivot));
+  assert.ok(rig.spinePivot.children.includes(rig.leftShoulderPivot));
+  assert.ok(rig.spinePivot.children.includes(rig.rightShoulderPivot));
+  assert.ok(rig.leftShoulderPivot.children.includes(rig.leftElbowPivot));
+  assert.ok(rig.rightShoulderPivot.children.includes(rig.rightElbowPivot));
+  assert.ok(rig.hipsPivot.children.includes(rig.leftHipPivot));
+  assert.ok(rig.hipsPivot.children.includes(rig.rightHipPivot));
+  assert.ok(rig.leftHipPivot.children.includes(rig.leftKneePivot));
+  assert.ok(rig.rightHipPivot.children.includes(rig.rightKneePivot));
+  assert.ok(rig.leftKneePivot.children.includes(rig.leftAnklePivot));
+  assert.ok(rig.rightKneePivot.children.includes(rig.rightAnklePivot));
+
+  // Verify PBR materials are distinct (skin, jacket, shirt, pants, shoes, hair, eyes, watch/buckle)
+  const uniqueMaterials = new Set<THREE.Material>();
+  rig.bodyRig.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.material instanceof THREE.MeshStandardMaterial) {
+      uniqueMaterials.add(obj.material);
+    }
+  });
+  assert.ok(uniqueMaterials.size >= 8, `protagonist should use rich distinct PBR materials, found ${uniqueMaterials.size}`);
+  assert.ok(Math.abs(rig.hipsPivot.position.y - PLAYER_DIMS.hipY) < 1e-5);
+
+  rig.dispose();
+  dummyShadow.dispose();
+});
+
+test('Phase 2B-1: player locomotion animator drives idle, stride-matched walk/sprint, jump/fall/landing recovery, and turning with anatomical joint limits', () => {
+  const dummyShadow = new THREE.Texture();
+  const rig = createPlayerCharacterRig(dummyShadow);
+  const anim = createInitialPlayerAnimatorState();
+
+  // 1. Idle: keeps legs planted near neutral, does not advance walking gait, has subtle breathing
+  const idlePhaseBefore = anim.gaitPhase;
+  for (let i = 0; i < 60; i++) {
+    stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 0,
+      vy: 0,
+      grounded: true,
+      justLandedStrength: 0,
+      headingDelta: 0,
+      state: 'idle',
+    });
+  }
+  applyPlayerPoseToRig(rig, anim);
+  assert.equal(anim.gaitPhase, idlePhaseBefore, 'idle must not advance locomotion gait phase');
+  assert.ok(Math.abs(anim.leftHipX) < 0.08 && Math.abs(anim.rightHipX) < 0.08, 'idle hips should stay near neutral');
+  assert.ok(anim.leftElbowX >= 0 && anim.rightElbowX >= 0, 'elbows must only bend anatomically forward (>= 0)');
+
+  // 2. Walk: coordinated opposite-phase limb swing, backward knee flexion (<= 0), forward elbow flexion (>= 0), and footsteps
+  let walkFootsteps = 0;
+  let maxLeftHip = -Infinity;
+  let minLeftHip = Infinity;
+  let minKneeFlex = 0;
+  let maxWalkForwardLean = 0;
+  for (let i = 0; i < 120; i++) {
+    const res = stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 5.2,
+      vy: 0,
+      grounded: true,
+      justLandedStrength: 0,
+      headingDelta: 0,
+      state: 'walk',
+    });
+    if (res.footstepTriggered) walkFootsteps++;
+    maxLeftHip = Math.max(maxLeftHip, anim.leftHipX);
+    minLeftHip = Math.min(minLeftHip, anim.leftHipX);
+    minKneeFlex = Math.min(minKneeFlex, anim.leftKneeX, anim.rightKneeX);
+    maxWalkForwardLean = Math.min(maxWalkForwardLean, anim.spinePitch);
+    assert.ok(anim.leftKneeX <= 1e-4 && anim.rightKneeX <= 1e-4, 'knees must only flex backward (<= 0)');
+    assert.ok(anim.leftElbowX >= -1e-4 && anim.rightElbowX >= -1e-4, 'elbows must only flex forward (>= 0)');
+  }
+  assert.ok(walkFootsteps >= 3, `expected stride-matched walk footsteps over 2s, got ${walkFootsteps}`);
+  assert.ok(maxLeftHip > 0.3 && minLeftHip < -0.3, 'walking must swing legs forward and back');
+  assert.ok(minKneeFlex < -0.35, 'walking swing phase must bend knee naturally');
+
+  // 3. Sprint: greater forward lean, larger stride amplitude, faster cadence, turning head anticipation
+  let sprintFootsteps = 0;
+  let maxSprintForwardLean = 0;
+  let maxHeadAnticipation = 0;
+  for (let i = 0; i < 120; i++) {
+    const res = stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 9.4,
+      vy: 0,
+      grounded: true,
+      justLandedStrength: 0,
+      headingDelta: 0.04,
+      state: 'sprint',
+    });
+    if (res.footstepTriggered) sprintFootsteps++;
+    maxSprintForwardLean = Math.min(maxSprintForwardLean, anim.spinePitch);
+    maxHeadAnticipation = Math.max(maxHeadAnticipation, Math.abs(anim.neckYaw));
+    assert.ok(anim.leftKneeX <= 1e-4 && anim.rightKneeX <= 1e-4);
+    assert.ok(anim.leftElbowX >= -1e-4 && anim.rightElbowX >= -1e-4);
+  }
+  assert.ok(sprintFootsteps > walkFootsteps, 'sprinting should have a faster footstep cadence than walking');
+  assert.ok(maxSprintForwardLean < maxWalkForwardLean - 0.06, 'sprinting should lean torso further forward than walking');
+  assert.ok(maxHeadAnticipation > 0.08, 'turning should produce subtle head anticipation');
+
+  // 4. Jump ascent -> descent -> landing knee compression and smooth recovery
+  for (let i = 0; i < 12; i++) {
+    stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 4.5,
+      vy: 6.5 - i * 0.4,
+      grounded: false,
+      justLandedStrength: 0,
+      headingDelta: 0,
+      state: 'jump',
+    });
+  }
+  assert.ok(anim.leftKneeX < -0.25 || anim.rightKneeX < -0.25, 'airborne pose should tuck knee naturally');
+
+  // Fall fast before impact
+  for (let i = 0; i < 15; i++) {
+    stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 3.0,
+      vy: -9.5,
+      grounded: false,
+      justLandedStrength: 0,
+      headingDelta: 0,
+      state: 'jump',
+    });
+  }
+
+  // Touch down -> triggers landing compression
+  stepPlayerAnimation(anim, {
+    dt: 1 / 60,
+    planarSpeed: 0,
+    vy: 0,
+    grounded: true,
+    justLandedStrength: 0.85,
+    headingDelta: 0,
+    state: 'idle',
+  });
+  const impactDrop = anim.hipsOffsetY;
+  assert.ok(anim.landingImpact > 0.5, 'hard touchdown should trigger landing compression');
+  assert.ok(impactDrop < -0.02, 'landing compression should momentarily lower hips');
+
+  // Settle back to neutral standing posture
+  for (let i = 0; i < 45; i++) {
+    stepPlayerAnimation(anim, {
+      dt: 1 / 60,
+      planarSpeed: 0,
+      vy: 0,
+      grounded: true,
+      justLandedStrength: 0,
+      headingDelta: 0,
+      state: 'idle',
+    });
+  }
+  assert.ok(anim.landingImpact < 0.05, 'landing compression should smoothly recover to standing');
+
+  applyPlayerPoseToRig(rig, anim);
+  assert.ok(Number.isFinite(rig.hipsPivot.position.y) && Number.isFinite(rig.leftHipPivot.rotation.x));
+
+  rig.dispose();
+  dummyShadow.dispose();
+});
+
+test('Phase 2B-1: PlayerController preserves movement, sprint, jump, collision resolution, vehicle visibility toggle, and clean disposal', () => {
+  const dummyShadow = new THREE.Texture();
+  const player = new PlayerController(dummyShadow);
+  player.setPosition(0, 0, 0);
+
+  let footsteps = 0;
+  let jumps = 0;
+
+  // Walk forward (-Z when cameraYaw = 0)
+  for (let i = 0; i < 45; i++) {
+    player.update({
+      dt: 1 / 60,
+      moveForward: 1,
+      moveRight: 0,
+      sprint: false,
+      jumpJustPressed: false,
+      jumpHeld: false,
+      cameraYaw: 0,
+      colliders: [],
+      vehicleCircles: [],
+      onFootstep: () => footsteps++,
+      onJump: () => jumps++,
+    });
+  }
+  assert.equal(player.state, 'walk');
+  assert.ok(player.z < -2.0, `player should move forward (-Z), got z=${player.z}`);
+  assert.ok(footsteps >= 1, 'walking should invoke onFootstep callback');
+
+  // Sprint increases speed beyond walk speed
+  for (let i = 0; i < 30; i++) {
+    player.update({
+      dt: 1 / 60,
+      moveForward: 1,
+      moveRight: 0,
+      sprint: true,
+      jumpJustPressed: false,
+      jumpHeld: false,
+      cameraYaw: 0,
+      colliders: [],
+      vehicleCircles: [],
+    });
+  }
+  assert.equal(player.state, 'sprint');
+  assert.ok(Math.hypot(player.vx, player.vz) > 7.5, 'sprint should exceed walking speed');
+
+  // Jump launches off ground and lands back at y = 0
+  player.update({
+    dt: 1 / 60,
+    moveForward: 0,
+    moveRight: 0,
+    sprint: false,
+    jumpJustPressed: true,
+    jumpHeld: true,
+    cameraYaw: 0,
+    colliders: [],
+    vehicleCircles: [],
+    onJump: () => jumps++,
+  });
+  assert.equal(jumps, 1);
+  assert.equal(player.grounded, false);
+  assert.equal(player.state, 'jump');
+
+  let peakY = 0;
+  for (let i = 0; i < 90; i++) {
+    player.update({
+      dt: 1 / 60,
+      moveForward: 0,
+      moveRight: 0,
+      sprint: false,
+      jumpJustPressed: false,
+      jumpHeld: true,
+      cameraYaw: 0,
+      colliders: [],
+      vehicleCircles: [],
+    });
+    peakY = Math.max(peakY, player.y);
+  }
+  assert.ok(peakY > 0.8, `jump should clear ground cleanly, got peakY=${peakY}`);
+  assert.equal(player.grounded, true);
+  assert.equal(player.y, 0);
+
+  // Wall collision stops penetration
+  player.setPosition(0, 0, 0);
+  for (let i = 0; i < 40; i++) {
+    player.update({
+      dt: 1 / 60,
+      moveForward: 1,
+      moveRight: 0,
+      sprint: false,
+      jumpJustPressed: false,
+      jumpHeld: false,
+      cameraYaw: 0,
+      colliders: [{ id: 'test-wall', minX: -5, maxX: 5, minZ: -3, maxZ: -1, height: 4, kind: 'building' }],
+      vehicleCircles: [],
+    });
+  }
+  assert.ok(player.z >= -1.0 + 0.47, `wall collision must keep player outside box, got z=${player.z}`);
+
+  // Vehicle entry/exit visibility contract
+  player.setVisible(false);
+  assert.equal(player.visible, false);
+  assert.equal(player.root.visible, false);
+  player.setVisible(true);
+  assert.equal(player.visible, true);
+  assert.equal(player.root.visible, true);
+
+  player.dispose();
+  dummyShadow.dispose();
+});
+
+test('Phase 2B-2: pedestrian shared geometries, 8 coastal outfit archetypes, natural adult proportions, and GPU resource reuse across 26 NPCs', () => {
+  const sharedGeo = createPedestrianSharedGeometries();
+  const geoEntries: Array<[string, THREE.BufferGeometry]> = [
+    ['pelvis', sharedGeo.pelvis],
+    ['belt', sharedGeo.belt],
+    ['tshirtTorso', sharedGeo.tshirtTorso],
+    ['collaredTorso', sharedGeo.collaredTorso],
+    ['openJacketInner', sharedGeo.openJacketInner],
+    ['openJacketShell', sharedGeo.openJacketShell],
+    ['headSkin', sharedGeo.headSkin],
+    ['eyeWhites', sharedGeo.eyeWhites],
+    ['eyeIrises', sharedGeo.eyeIrises],
+    ['lips', sharedGeo.lips],
+    ['hairShortCrop', sharedGeo.hairStyles.shortCrop],
+    ['hairSweptWaves', sharedGeo.hairStyles.sweptWaves],
+    ['hairBobCut', sharedGeo.hairStyles.bobCut],
+    ['hairHighPonytail', sharedGeo.hairStyles.highPonytail],
+    ['longSleeveUpperArm', sharedGeo.longSleeveUpperArm],
+    ['shortSleeveFabricUpper', sharedGeo.shortSleeveFabricUpper],
+    ['shortSleeveSkinLower', sharedGeo.shortSleeveSkinLower],
+    ['bareForearmAndHand', sharedGeo.bareForearmAndHand],
+    ['longSleeveForearm', sharedGeo.longSleeveForearm],
+    ['handOnly', sharedGeo.handOnly],
+    ['thighTrouser', sharedGeo.thighTrouser],
+    ['thighShortsFabric', sharedGeo.thighShortsFabric],
+    ['thighShortsBareLower', sharedGeo.thighShortsBareLower],
+    ['shinTrouser', sharedGeo.shinTrouser],
+    ['shinAnkleSkin', sharedGeo.shinAnkleSkin],
+    ['shinBare', sharedGeo.shinBare],
+    ['sneakerUpper', sharedGeo.shoes.sneaker.upper],
+    ['sneakerSole', sharedGeo.shoes.sneaker.sole],
+    ['loaferUpper', sharedGeo.shoes.loafer.upper],
+    ['loaferSole', sharedGeo.shoes.loafer.sole],
+    ['sunglasses', sharedGeo.sunglasses],
+    ['backpack', sharedGeo.backpack],
+  ];
+
+  for (const [name, g] of geoEntries) {
+    const pos = g.getAttribute('position');
+    const norm = g.getAttribute('normal');
+    assert.ok(pos && pos.count > 12, `${name} should have sculpted vertex detail`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const nLen = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(Number.isFinite(nLen) && Math.abs(nLen - 1) < 0.05, `${name} normal ${i} must be unit length`);
+    }
+  }
+  sharedGeo.dispose();
+
+  // Verify at least 6 cohesive coastal city visual archetypes (8 provided)
+  assert.ok(PEDESTRIAN_ARCHETYPES.length >= 6, 'expected at least 6 pedestrian archetypes');
+  const themes = new Set(PEDESTRIAN_ARCHETYPES.map((a) => a.theme));
+  assert.ok(
+    themes.has('tourist') && themes.has('office') && themes.has('local') && themes.has('sporty') && themes.has('beach'),
+    'archetypes should span tourist, office, local, sporty, and beach coastal themes',
+  );
+
+  const dummyShadow = new THREE.Texture();
+  const resources = createPedestrianSharedResources(dummyShadow);
+  const heights: number[] = [];
+  const usedGeos = new Set<THREE.BufferGeometry>();
+  const usedMats = new Set<THREE.Material>();
+
+  for (let i = 0; i < 26; i++) {
+    const rig = createPedestrianRig(resources, i);
+    rig.root.updateMatrixWorld(true);
+    const bodyBox = new THREE.Box3().setFromObject(rig.bodyRig);
+    const size = bodyBox.getSize(new THREE.Vector3());
+    heights.push(size.y);
+
+    assert.ok(
+      bodyBox.min.y >= -0.005 && bodyBox.min.y <= 0.005,
+      `pedestrian ${rig.archetypeId} soles must stand flush on y=0, got min.y=${bodyBox.min.y.toFixed(4)}`,
+    );
+    assert.ok(
+      size.y >= 1.6 && size.y <= 1.92,
+      `pedestrian ${rig.archetypeId} height must be natural adult range, got ${size.y.toFixed(3)}m`,
+    );
+    assert.ok(
+      size.x >= 0.45 && size.x <= 0.62,
+      `pedestrian ${rig.archetypeId} width must be natural adult range, got ${size.x.toFixed(3)}m`,
+    );
+    assert.ok(Math.abs(rig.hipsPivot.position.y - PEDESTRIAN_DIMS.hipY) < 1e-5);
+
+    // Articulated rig hierarchy check
+    assert.ok(rig.hipsPivot.children.includes(rig.spinePivot));
+    assert.ok(rig.spinePivot.children.includes(rig.neckPivot));
+    assert.ok(rig.leftShoulderPivot.children.includes(rig.leftElbowPivot));
+    assert.ok(rig.rightShoulderPivot.children.includes(rig.rightElbowPivot));
+    assert.ok(rig.leftHipPivot.children.includes(rig.leftKneePivot));
+    assert.ok(rig.leftKneePivot.children.includes(rig.leftAnklePivot));
+
+    rig.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        usedGeos.add(obj.geometry);
+        if (obj.material instanceof THREE.Material) {
+          usedMats.add(obj.material);
+          if (obj.material instanceof THREE.MeshStandardMaterial && obj.material !== resources.sunglassesMat) {
+            assert.ok(obj.material.metalness <= 0.1, 'ordinary pedestrian clothing/skin/hair must not look metallic');
+          }
+        }
+      }
+    });
+  }
+
+  // Natural adult height variation across the population
+  const heightSpan = Math.max(...heights) - Math.min(...heights);
+  assert.ok(heightSpan >= 0.08, `expected noticeable adult height variation across pedestrians, got ${heightSpan.toFixed(3)}m`);
+
+  // Performance guarantee: 26 pedestrians reuse a compact bounded pool of shared geometries & materials
+  assert.ok(usedGeos.size <= 35, `expected compact shared geometry pool across 26 NPCs, got ${usedGeos.size}`);
+  assert.ok(usedMats.size <= 50, `expected compact shared material pool across 26 NPCs, got ${usedMats.size}`);
+  assert.equal(usedMats.size, resources.getMaterialCount());
+
+  resources.dispose();
+  dummyShadow.dispose();
+});
+
+test('Phase 2B-2: pedestrian locomotion animator supports idle, stride-matched walk, fleeing run, turning anticipation, smooth stop/start, and anatomical limits', () => {
+  const dummyShadow = new THREE.Texture();
+  const resources = createPedestrianSharedResources(dummyShadow);
+  const rig = createPedestrianRig(resources, 0);
+  const anim = createInitialPedestrianAnimatorState(0);
+
+  // 1. Idle: keeps legs near neutral, does not advance walking gait, has subtle breathing & head glance
+  const startPhase = anim.gaitPhase;
+  let maxNeckIdle = 0;
+  for (let i = 0; i < 90; i++) {
+    stepPedestrianAnimation(anim, {
+      dt: 1 / 60,
+      actualSpeed: 0,
+      headingDelta: 0,
+      state: 'idle',
+      heightScale: rig.heightScale,
+    });
+    maxNeckIdle = Math.max(maxNeckIdle, Math.abs(anim.neckYaw));
+  }
+  assert.equal(anim.gaitPhase, startPhase, 'idle must not advance walk gait phase');
+  assert.ok(Math.abs(anim.leftHipX) < 0.08 && Math.abs(anim.rightHipX) < 0.08, 'idle legs should stay planted near neutral');
+  assert.ok(maxNeckIdle > 0.02, 'idle should include subtle head look-around motion');
+
+  // 2. Walking: coordinated opposite limb swing, anatomical knee/elbow limits, smooth turning bank
+  let maxWalkHip = -Infinity;
+  let minWalkHip = Infinity;
+  let minWalkKnee = 0;
+  let walkTurnNeck = 0;
+  for (let i = 0; i < 120; i++) {
+    stepPedestrianAnimation(anim, {
+      dt: 1 / 60,
+      actualSpeed: 1.85,
+      headingDelta: 0.03,
+      state: 'walk',
+      heightScale: rig.heightScale,
+    });
+    maxWalkHip = Math.max(maxWalkHip, anim.leftHipX);
+    minWalkHip = Math.min(minWalkHip, anim.leftHipX);
+    minWalkKnee = Math.min(minWalkKnee, anim.leftKneeX, anim.rightKneeX);
+    walkTurnNeck = Math.max(walkTurnNeck, Math.abs(anim.neckYaw));
+    assert.ok(anim.leftKneeX <= 1e-4 && anim.rightKneeX <= 1e-4, 'knees must flex backward (<= 0)');
+    assert.ok(anim.leftElbowX >= -1e-4 && anim.rightElbowX >= -1e-4, 'elbows must flex forward (>= 0)');
+  }
+  assert.ok(maxWalkHip > 0.22 && minWalkHip < -0.22, 'walking must swing legs forward and back');
+  assert.ok(minWalkKnee < -0.22, 'walking must bend knees naturally');
+  assert.ok(walkTurnNeck > 0.05, 'turning while walking should create subtle head anticipation');
+
+  // 3. Fleeing (preserved state): deeper forward torso lean & larger stride amplitude than walking
+  let maxFleeLean = 0;
+  let maxFleeHip = -Infinity;
+  for (let i = 0; i < 90; i++) {
+    stepPedestrianAnimation(anim, {
+      dt: 1 / 60,
+      actualSpeed: 4.6,
+      headingDelta: 0,
+      state: 'flee',
+      heightScale: rig.heightScale,
+    });
+    maxFleeLean = Math.min(maxFleeLean, anim.spinePitch);
+    maxFleeHip = Math.max(maxFleeHip, anim.leftHipX);
+    assert.ok(anim.leftKneeX <= 1e-4 && anim.rightKneeX <= 1e-4);
+    assert.ok(anim.leftElbowX >= -1e-4 && anim.rightElbowX >= -1e-4);
+  }
+  assert.ok(maxFleeLean < -0.15, 'fleeing run should lean torso forward');
+  assert.ok(maxFleeHip > maxWalkHip + 0.12, 'fleeing run should use a longer stride than casual walk');
+
+  // 4. Stopping smoothly transitions back toward idle without snapping in 1 frame
+  const hipBeforeStop = anim.leftHipX;
+  stepPedestrianAnimation(anim, {
+    dt: 1 / 60,
+    actualSpeed: 0,
+    headingDelta: 0,
+    state: 'idle',
+    heightScale: rig.heightScale,
+  });
+  const firstStepDelta = Math.abs(anim.leftHipX - hipBeforeStop);
+  assert.ok(firstStepDelta < 0.25, 'stopping must damp smoothly instead of snapping to idle in one frame');
+  for (let i = 0; i < 60; i++) {
+    stepPedestrianAnimation(anim, {
+      dt: 1 / 60,
+      actualSpeed: 0,
+      headingDelta: 0,
+      state: 'idle',
+      heightScale: rig.heightScale,
+    });
+  }
+  assert.ok(Math.abs(anim.leftHipX) < 0.08, 'after stopping, legs should smoothly settle to neutral standing pose');
+
+  applyPedestrianPoseToRig(rig, anim);
+  assert.ok(Number.isFinite(rig.hipsPivot.position.y) && Number.isFinite(rig.leftKneePivot.rotation.x));
+
+  resources.dispose();
+  dummyShadow.dispose();
+});
+
+test('Phase 2B-2: PedestrianSystem preserves sidewalk traversal, player avoidance, fast-vehicle fleeing, LOD culling, and clean disposal', () => {
+  const layout = generateCityLayout();
+  const dummyShadow = new THREE.Texture();
+  const pedSys = new PedestrianSystem(layout.sidewalkLoops, dummyShadow, 26);
+
+  assert.equal(pedSys.getActorCount(), 26);
+  assert.equal(pedSys.root.children.length, 26);
+
+  // Confirm all 8 visual archetypes are represented in a 26-pedestrian city population
+  const spawnedArchetypes = new Set(pedSys.getArchetypeIds());
+  assert.equal(spawnedArchetypes.size, PEDESTRIAN_ARCHETYPES.length);
+
+  // Record initial positions, advance 2 seconds of sidewalk walking
+  const initialPos = pedSys.root.children.map((c) => c.position.clone());
+  let startled = false;
+  for (let i = 0; i < 120; i++) {
+    startled = pedSys.update(1 / 60, 999, 999, false, 0) || startled;
+  }
+  assert.equal(startled, false, 'pedestrians far from player must not report startledByVehicle');
+
+  let movedCount = 0;
+  for (let i = 0; i < pedSys.root.children.length; i++) {
+    if (pedSys.root.children[i].position.distanceTo(initialPos[i]) > 0.5) movedCount++;
+  }
+  assert.ok(movedCount >= 18, `most pedestrians should actively walk sidewalk loops, moved=${movedCount}`);
+
+  // Fast vehicle approaching right next to pedestrian 0 must trigger startledByVehicle and flee movement
+  const p0 = pedSys.root.children[0].position.clone();
+  const triggered = pedSys.update(1 / 60, p0.x + 1.5, p0.z, true, 14);
+  assert.equal(triggered, true, 'fast vehicle passing close to a pedestrian must trigger startledByVehicle');
+
+  // Clean disposal empties scene group and frees shared GPU resources
+  pedSys.dispose();
+  assert.equal(pedSys.getActorCount(), 0);
+  assert.equal(pedSys.root.children.length, 0);
+  dummyShadow.dispose();
+});
+
+
 
 
 

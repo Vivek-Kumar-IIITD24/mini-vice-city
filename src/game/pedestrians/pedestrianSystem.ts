@@ -1,13 +1,23 @@
 import * as THREE from 'three';
 import { SidewalkLoop } from '../world/cityData';
 import { dampAngle, distSq2D } from '../core/math';
+import {
+  type PedestrianRig,
+  type PedestrianSharedResources,
+  createPedestrianRig,
+  createPedestrianSharedResources,
+} from './pedestrianModel';
+import {
+  type PedestrianAnimatorState,
+  type PedestrianLocomotionState,
+  applyPedestrianPoseToRig,
+  createInitialPedestrianAnimatorState,
+  stepPedestrianAnimation,
+} from './pedestrianAnimator';
 
 interface PedestrianActor {
-  root: THREE.Group;
-  leftLeg: THREE.Mesh;
-  rightLeg: THREE.Mesh;
-  leftArm: THREE.Mesh;
-  rightArm: THREE.Mesh;
+  rig: PedestrianRig;
+  anim: PedestrianAnimatorState;
   loopIndex: number;
   waypointIndex: number;
   direction: 1 | -1;
@@ -15,106 +25,77 @@ interface PedestrianActor {
   z: number;
   heading: number;
   baseSpeed: number;
-  gaitPhase: number;
   idleTimer: number;
   fleeTimer: number;
 }
 
-const SHIRT_COLORS = [0xf472b6, 0x38bdf8, 0xfbbf24, 0x34d399, 0xf8fafc, 0xfb923c, 0xc084fc];
-const PANTS_COLORS = [0x1e293b, 0x334155, 0xf1f5f9, 0x78716c, 0x0f172a];
-const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
+const DETAIL_LOD_DIST_SQ = 34 * 34;
+const FAR_ANIM_LOD_DIST_SQ = 42 * 42;
+
+function shortestAngleDelta(from: number, to: number): number {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
 
 export class PedestrianSystem {
   public readonly root = new THREE.Group();
   private actors: PedestrianActor[] = [];
   private loops: SidewalkLoop[];
-  private disposables: Array<{ dispose: () => void }> = [];
+  private sharedResources: PedestrianSharedResources;
 
   constructor(loops: SidewalkLoop[], contactShadowMap: THREE.Texture, count: number = 22) {
     this.loops = loops;
-
-    // Shared geometries across all pedestrians for fast draw performance
-    const torsoGeo = new THREE.BoxGeometry(0.38, 0.52, 0.22);
-    const headGeo = new THREE.BoxGeometry(0.24, 0.26, 0.24);
-    const legGeo = new THREE.BoxGeometry(0.14, 0.62, 0.15);
-    legGeo.translate(0, -0.31, 0);
-    const armGeo = new THREE.BoxGeometry(0.11, 0.48, 0.12);
-    armGeo.translate(0, -0.24, 0);
-    const shadowGeo = new THREE.PlaneGeometry(0.95, 0.95);
-    shadowGeo.rotateX(-Math.PI / 2);
-    const shadowMat = new THREE.MeshBasicMaterial({
-      map: contactShadowMap,
-      transparent: true,
-      opacity: 0.5,
-      depthWrite: false,
-    });
-    this.disposables.push(torsoGeo, headGeo, legGeo, armGeo, shadowGeo, shadowMat);
-
-    const shirtMats = SHIRT_COLORS.map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.78 }),
-    );
-    const pantsMats = PANTS_COLORS.map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.82 }),
-    );
-    const skinMats = SKIN_COLORS.map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.68 }),
-    );
-    this.disposables.push(...shirtMats, ...pantsMats, ...skinMats);
+    this.sharedResources = createPedestrianSharedResources(contactShadowMap);
 
     for (let i = 0; i < count; i++) {
       const loopIndex = i % loops.length;
       const pts = loops[loopIndex].points;
       const wpIndex = i % pts.length;
       const nextWp = (wpIndex + 1) % pts.length;
-      const t = ((i * 0.37) % 1);
+      const t = (i * 0.37) % 1;
       const startX = pts[wpIndex].x + (pts[nextWp].x - pts[wpIndex].x) * t;
       const startZ = pts[wpIndex].z + (pts[nextWp].z - pts[wpIndex].z) * t;
+      const initDx = pts[nextWp].x - startX;
+      const initDz = pts[nextWp].z - startZ;
+      const initHeading =
+        Math.hypot(initDx, initDz) > 1e-4 ? Math.atan2(-initDx, -initDz) : 0;
 
-      const pedRoot = new THREE.Group();
-      const sMat = shirtMats[i % shirtMats.length];
-      const pMat = pantsMats[(i * 3) % pantsMats.length];
-      const skMat = skinMats[(i * 5) % skinMats.length];
+      const rig = createPedestrianRig(this.sharedResources, i);
+      const anim = createInitialPedestrianAnimatorState(i * 1.1);
+      applyPedestrianPoseToRig(rig, anim);
 
-      const torso = new THREE.Mesh(torsoGeo, sMat);
-      torso.position.y = 1.06;
-      const head = new THREE.Mesh(headGeo, skMat);
-      head.position.y = 1.5;
-
-      const leftLeg = new THREE.Mesh(legGeo, pMat);
-      leftLeg.position.set(-0.1, 0.78, 0);
-      const rightLeg = new THREE.Mesh(legGeo, pMat);
-      rightLeg.position.set(0.1, 0.78, 0);
-
-      const leftArm = new THREE.Mesh(armGeo, sMat);
-      leftArm.position.set(-0.25, 1.3, 0);
-      const rightArm = new THREE.Mesh(armGeo, sMat);
-      rightArm.position.set(0.25, 1.3, 0);
-
-      const sh = new THREE.Mesh(shadowGeo, shadowMat);
-      sh.position.y = 0.085;
-
-      pedRoot.add(torso, head, leftLeg, rightLeg, leftArm, rightArm, sh);
-      pedRoot.position.set(startX, 0, startZ);
-      this.root.add(pedRoot);
+      rig.root.position.set(startX, 0, startZ);
+      rig.root.rotation.y = initHeading;
+      this.root.add(rig.root);
 
       this.actors.push({
-        root: pedRoot,
-        leftLeg,
-        rightLeg,
-        leftArm,
-        rightArm,
+        rig,
+        anim,
         loopIndex,
         waypointIndex: nextWp,
         direction: i % 2 === 0 ? 1 : -1,
         x: startX,
         z: startZ,
-        heading: 0,
+        heading: initHeading,
         baseSpeed: 1.55 + (i % 4) * 0.22,
-        gaitPhase: i * 1.1,
         idleTimer: i % 5 === 0 ? 1.8 : 0,
         fleeTimer: 0,
       });
     }
+  }
+
+  public getActorCount(): number {
+    return this.actors.length;
+  }
+
+  public getArchetypeIds(): string[] {
+    return this.actors.map((a) => a.rig.archetypeId);
+  }
+
+  public getSharedMaterialCount(): number {
+    return this.sharedResources.getMaterialCount();
   }
 
   public update(
@@ -131,6 +112,10 @@ export class PedestrianSystem {
       const a = this.actors[i];
       const loop = this.loops[a.loopIndex].points;
 
+      const prevX = a.x;
+      const prevZ = a.z;
+      const prevHeading = a.heading;
+
       const distToPlayerSq = distSq2D(a.x, a.z, playerX, playerZ);
       if (playerInVehicle && Math.abs(playerSpeed) > 6 && distToPlayerSq < 42) {
         a.fleeTimer = 2.0;
@@ -138,6 +123,8 @@ export class PedestrianSystem {
           startledByVehicle = true;
         }
       }
+
+      let locoState: PedestrianLocomotionState = 'walk';
 
       if (a.fleeTimer > 0) {
         a.fleeTimer -= safeDt;
@@ -149,13 +136,10 @@ export class PedestrianSystem {
         a.z += (dz / d) * fleeSpeed * safeDt;
         const targetHeading = Math.atan2(-dx, -dz);
         a.heading = dampAngle(a.heading, targetHeading, 10, safeDt);
-        a.gaitPhase += fleeSpeed * 2.4 * safeDt;
+        locoState = 'flee';
       } else if (a.idleTimer > 0) {
         a.idleTimer -= safeDt;
-        a.leftLeg.rotation.x *= 0.85;
-        a.rightLeg.rotation.x *= 0.85;
-        a.leftArm.rotation.x *= 0.85;
-        a.rightArm.rotation.x *= 0.85;
+        locoState = 'idle';
       } else {
         const target = loop[a.waypointIndex];
         let dx = target.x - a.x;
@@ -166,6 +150,7 @@ export class PedestrianSystem {
           a.waypointIndex = (a.waypointIndex + a.direction + loop.length) % loop.length;
           if ((i + a.waypointIndex) % 4 === 0) {
             a.idleTimer = 1.6;
+            locoState = 'idle';
           }
         } else {
           dx /= dist;
@@ -186,26 +171,37 @@ export class PedestrianSystem {
           a.z += dz * a.baseSpeed * safeDt;
           const targetHeading = Math.atan2(-dx, -dz);
           a.heading = dampAngle(a.heading, targetHeading, 7, safeDt);
-          a.gaitPhase += a.baseSpeed * 2.3 * safeDt;
+          locoState = 'walk';
         }
       }
 
-      if (a.idleTimer <= 0) {
-        const swing = Math.sin(a.gaitPhase) * (a.fleeTimer > 0 ? 0.75 : 0.45);
-        a.leftLeg.rotation.x = swing;
-        a.rightLeg.rotation.x = -swing;
-        a.leftArm.rotation.x = -swing * 0.7;
-        a.rightArm.rotation.x = swing * 0.7;
-      }
+      const movedDist = Math.hypot(a.x - prevX, a.z - prevZ);
+      const actualSpeed = safeDt > 1e-4 ? movedDist / safeDt : 0;
+      const headingDelta = shortestAngleDelta(prevHeading, a.heading);
 
-      a.root.position.set(a.x, 0, a.z);
-      a.root.rotation.y = a.heading;
+      // Distance-based LOD for facial/accessory micro-details & far joint channels
+      a.rig.setDetailVisible(distToPlayerSq < DETAIL_LOD_DIST_SQ);
+
+      stepPedestrianAnimation(a.anim, {
+        dt: safeDt,
+        actualSpeed,
+        headingDelta,
+        state: locoState,
+        heightScale: a.rig.heightScale,
+        reducedDetail: distToPlayerSq > FAR_ANIM_LOD_DIST_SQ,
+      });
+      applyPedestrianPoseToRig(a.rig, a.anim);
+
+      a.rig.root.position.set(a.x, 0, a.z);
+      a.rig.root.rotation.y = a.heading;
     }
 
     return startledByVehicle;
   }
 
   public dispose(): void {
-    for (const d of this.disposables) d.dispose();
+    this.root.clear();
+    this.actors.length = 0;
+    this.sharedResources.dispose();
   }
 }
