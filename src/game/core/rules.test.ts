@@ -20,6 +20,16 @@ import {
   stepVehiclePhysics,
 } from '../vehicles/vehiclePhysics';
 import {
+  VELOCE_GT_DIMS,
+  buildVeloceBodyShellGeometry,
+  buildVeloceRearGlassGeometry,
+  buildVeloceRoofGeometry,
+  buildVeloceSideWindowGeometry,
+  buildVeloceWheelParts,
+  buildVeloceWindshieldGeometry,
+  evaluateVeloceBodySection,
+} from '../vehicles/veloceGtGeometry';
+import {
   addWantedHeat,
   createInitialWantedState,
   stepWantedCooldown,
@@ -1172,6 +1182,160 @@ test('Phase 1F: graphics-quality tiers and shadow/resource disposal clean up GPU
   markers.dispose();
   disposeSharedVehicleResources();
 });
+
+test('Phase 2A: Veloce GT parametric body profile has exotic coupe proportions, coke-bottle waist, arched wheel wells, and open cockpit aperture', () => {
+  const nose = evaluateVeloceBodySection(-2.22);
+  const frontAxle = evaluateVeloceBodySection(VELOCE_GT_DIMS.frontAxleZ);
+  const waist = evaluateVeloceBodySection(0.02);
+  const rearAxle = evaluateVeloceBodySection(VELOCE_GT_DIMS.rearAxleZ);
+  const tail = evaluateVeloceBodySection(2.22);
+
+  // Exotic sports car planform: tapered nose, muscular front fenders, pinched waist, widest rear haunches
+  assert.ok(frontAxle.halfWidthMid > nose.halfWidthMid + 0.15, 'front fenders should flare beyond nose');
+  assert.ok(waist.halfWidthMid < frontAxle.halfWidthMid, 'coke-bottle waist should tuck inward between axles');
+  assert.ok(rearAxle.halfWidthMid > waist.halfWidthMid + 0.08, 'rear haunches should flare wide behind waist');
+  assert.ok(rearAxle.halfWidthMid >= frontAxle.halfWidthMid, 'rear haunches should be at least as wide as front fenders');
+  assert.ok(tail.halfWidthMid < rearAxle.halfWidthMid, 'rear fascia should taper cleanly from haunches');
+
+  // Genuine circular wheel-arch cutouts provide clearance above wheelRadius (0.34m) for steering & suspension
+  assert.equal(frontAxle.inFrontArch, true);
+  assert.equal(rearAxle.inRearArch, true);
+  assert.ok(
+    frontAxle.sillY > VELOCE_GT_DIMS.wheelRadius + 0.32,
+    `front wheel arch crown must clear wheel top, got ${frontAxle.sillY}`,
+  );
+  assert.ok(
+    rearAxle.sillY > VELOCE_GT_DIMS.wheelRadius + 0.35,
+    `rear wheel arch crown must clear wheel top, got ${rearAxle.sillY}`,
+  );
+  assert.ok(waist.sillY < 0.22, 'low aerodynamic rocker sill between wheel arches');
+
+  // Open cockpit tub between windshield cowl and rear bulkhead, closed across bonnet and rear deck
+  assert.equal(frontAxle.cabinOpenHalfWidth, 0, 'bonnet over front axle must stay closed');
+  assert.ok(waist.cabinOpenHalfWidth > 0.5, 'cabin aperture must open so interior is visible through glass');
+  assert.equal(rearAxle.cabinOpenHalfWidth, 0, 'rear engine deck over rear axle must stay closed');
+});
+
+test('Phase 2A: Veloce GT custom sculpted geometries have finite vertices, valid outward normals, and staggered rounded Lathe wheels', () => {
+  const body = buildVeloceBodyShellGeometry();
+  const roof = buildVeloceRoofGeometry();
+  const windshield = buildVeloceWindshieldGeometry();
+  const rearGlass = buildVeloceRearGlassGeometry();
+  const sideL = buildVeloceSideWindowGeometry(-1);
+  const sideR = buildVeloceSideWindowGeometry(1);
+  const frontWheel = buildVeloceWheelParts(VELOCE_GT_DIMS.frontWheelWidth);
+  const rearWheel = buildVeloceWheelParts(VELOCE_GT_DIMS.rearWheelWidth);
+
+  const checkFiniteAndUnitNormals = (geo: THREE.BufferGeometry, name: string) => {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 20, `${name} should have dense sculpted vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} should have vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)));
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len > 0.8 && len < 1.2, `${name} normal ${i} must be unit length, got ${len}`);
+    }
+  };
+
+  checkFiniteAndUnitNormals(body, 'bodyShell');
+  checkFiniteAndUnitNormals(roof, 'roof');
+  checkFiniteAndUnitNormals(windshield, 'windshield');
+  checkFiniteAndUnitNormals(rearGlass, 'rearGlass');
+  checkFiniteAndUnitNormals(sideL, 'sideWindowL');
+  checkFiniteAndUnitNormals(sideR, 'sideWindowR');
+  checkFiniteAndUnitNormals(frontWheel.tireGeo, 'frontTire');
+  checkFiniteAndUnitNormals(rearWheel.tireGeo, 'rearTire');
+
+  // Verify outward normal orientation on roof (+Y), windshield (+Y,-Z), rearGlass (+Y,+Z), side windows (-X / +X)
+  const avgNormal = (geo: THREE.BufferGeometry) => {
+    const n = geo.getAttribute('normal');
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < n.count; i++) {
+      x += n.getX(i); y += n.getY(i); z += n.getZ(i);
+    }
+    return { x: x / n.count, y: y / n.count, z: z / n.count };
+  };
+  const nRoof = avgNormal(roof);
+  const nWind = avgNormal(windshield);
+  const nRear = avgNormal(rearGlass);
+  const nSideL = avgNormal(sideL);
+  const nSideR = avgNormal(sideR);
+  assert.ok(nRoof.y > 0.85, `roof normals must point upward (+Y), got ${nRoof.y}`);
+  assert.ok(nWind.y > 0.5 && nWind.z < -0.35, `windshield normals must point up-forward, got (${nWind.y}, ${nWind.z})`);
+  assert.ok(nRear.y > 0.7 && nRear.z > 0.15, `rear glass normals must point up-rearward, got (${nRear.y}, ${nRear.z})`);
+  assert.ok(nSideL.x < -0.6, `left side window normals must point outward (-X), got ${nSideL.x}`);
+  assert.ok(nSideR.x > 0.6, `right side window normals must point outward (+X), got ${nSideR.x}`);
+
+  // Verify staggered tire widths (rear wider than front) and grounded diameter (~0.68m)
+  frontWheel.tireGeo.computeBoundingBox();
+  rearWheel.tireGeo.computeBoundingBox();
+  const fSize = new THREE.Vector3();
+  const rSize = new THREE.Vector3();
+  frontWheel.tireGeo.boundingBox!.getSize(fSize);
+  rearWheel.tireGeo.boundingBox!.getSize(rSize);
+  assert.ok(Math.abs(fSize.y - VELOCE_GT_DIMS.wheelRadius * 2) < 0.02, 'front tire outer diameter matches wheelRadius');
+  assert.ok(rSize.x > fSize.x + 0.03, 'rear tires should be wider than front tires (staggered sports fitment)');
+
+  for (const g of [
+    body, roof, windshield, rearGlass, sideL, sideR,
+    frontWheel.tireGeo, frontWheel.rimAlloyGeo, frontWheel.hubDarkGeo, frontWheel.lugGeo, frontWheel.rotorGeo, frontWheel.caliperGeo,
+    rearWheel.tireGeo, rearWheel.rimAlloyGeo, rearWheel.hubDarkGeo, rearWheel.lugGeo, rearWheel.rotorGeo, rearWheel.caliperGeo,
+  ]) {
+    g.dispose();
+  }
+});
+
+test('Phase 2A: Veloce GT VehicleRig preserves physics/wheel pivots, transparent glass over interior LOD, distinct PBR materials, and clean disposal', () => {
+  const dummyShadow = new THREE.Texture();
+  const rig1 = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const rig2 = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow, 0x2563eb);
+
+  // VehicleRig contract & steering/wheel pivot hierarchy
+  assert.equal(rig1.wheels.length, 4);
+  assert.ok(rig1.frontLeftPivot.children.includes(rig1.wheels[0]), 'frontLeftPivot must parent front-left spinning wheel');
+  assert.ok(rig1.frontRightPivot.children.includes(rig1.wheels[1]), 'frontRightPivot must parent front-right spinning wheel');
+  assert.ok(rig1.frontLeftPivot.children.length >= 2, 'frontLeftPivot should also mount stationary brake caliper');
+  assert.ok(Math.abs(rig1.frontLeftPivot.position.y - VELOCE_GT_DIMS.wheelRadius) < 1e-5);
+  assert.ok(rig1.frontLeftPivot.position.z < -1.0 && rig1.wheels[2].position.z > 1.0);
+
+  // Glass must be genuinely transparent over the cockpit interior and use high-clearcoat PBR
+  assert.equal(rig1.glassMat.transparent, true);
+  assert.ok(rig1.glassMat.opacity >= 0.25 && rig1.glassMat.opacity <= 0.55, 'Veloce GT glass should reveal interior clearly');
+  assert.equal(rig1.glassMat.depthWrite, false);
+
+  // Verify 3-tier LOD exists inside bodyGroup with interior cockpit, wipers, panel seams & emblem at near distance
+  const lod = rig1.bodyGroup.children.find((c): c is THREE.LOD => c instanceof THREE.LOD);
+  assert.ok(lod, 'Veloce GT bodyGroup should include a distance-based THREE.LOD for micro-details');
+  assert.ok(lod.levels.length >= 3, 'Veloce GT LOD must provide near, medium, and far detail tiers');
+  assert.ok(
+    lod.levels[0].object.children.length >= 12,
+    'near LOD level must include interior cockpit, wipers, panel seams, and rear emblem',
+  );
+  assert.ok(
+    lod.levels[1].object.children.length >= 3 &&
+      lod.levels[1].object.children.length < lod.levels[0].object.children.length,
+    'medium LOD level should reduce detail relative to near LOD',
+  );
+
+  // Verify cached geometry reuse between multiple Veloce GT instances
+  const bodyMesh1 = rig1.bodyGroup.children[0] as THREE.Mesh;
+  const bodyMesh2 = rig2.bodyGroup.children[0] as THREE.Mesh;
+  assert.equal(bodyMesh1.geometry, bodyMesh2.geometry, 'multiple Veloce GT instances must share cached GPU geometry');
+
+  // Verify other vehicle models are NOT accidentally replaced by the Veloce GT rig
+  const policeRig = createVehicleMesh(VEHICLE_CATALOG.vcpd_interceptor, dummyShadow);
+  const policeBody = policeRig.bodyGroup.children[0] as THREE.Mesh;
+  assert.notEqual(policeBody.geometry, bodyMesh1.geometry, 'VCPD Interceptor must retain its own distinct vehicle model');
+  assert.ok(policeRig.policeRedMat && policeRig.policeBlueMat, 'VCPD Interceptor emergency lights must stay intact');
+
+  rig1.dispose();
+  rig2.dispose();
+  policeRig.dispose();
+  disposeSharedVehicleResources();
+  dummyShadow.dispose();
+});
+
 
 
 

@@ -116,18 +116,18 @@ export class CameraRig {
     let desiredFov = 60;
 
     if (params.inVehicle && this.viewMode === CameraViewMode.Hood) {
-      // Hood / First-Person driving perspective
+      // Hood / First-Person driving perspective framing the sculpted front bonnet & fender crowns
       const fx = -Math.sin(params.targetHeading);
       const fz = -Math.cos(params.targetHeading);
       this.targetPos.set(
-        params.targetX + fx * 0.35,
-        params.targetY + 1.48,
-        params.targetZ + fz * 0.35,
+        params.targetX + fx * 0.54,
+        params.targetY + 0.98,
+        params.targetZ + fz * 0.54,
       );
       this.targetLook.set(
-        params.targetX + fx * 24,
-        params.targetY + 1.25,
-        params.targetZ + fz * 24,
+        params.targetX + fx * 22,
+        params.targetY + 0.62,
+        params.targetZ + fz * 22,
       );
       desiredFov = 66 + clamp(speedAbs * 0.35, 0, 12);
       const hoodAlpha = 1 - Math.exp(-22 * dt);

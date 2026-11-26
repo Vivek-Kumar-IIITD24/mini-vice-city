@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { VehicleKind, VehicleSpec } from '../types';
+import { createVeloceGtRig, disposeVeloceGtSharedResources } from './veloceGtModel';
 
 export interface VehiclePaintProfile {
   roughness: number;
@@ -110,17 +111,23 @@ export function disposeSharedVehicleResources(): void {
     cachedBeamTexture.dispose();
     cachedBeamTexture = null;
   }
+  disposeVeloceGtSharedResources();
 }
 
 /**
- * Builds a composite 10-14 part procedural 3D vehicle pivoted at bottom-center (y = 0).
+ * Builds a composite procedural 3D vehicle pivoted at bottom-center (y = 0).
  * Local forward direction is -Z.
+ * Routes Veloce GT (Sports) to the Phase 2A sculpted AAA-style coupe builder.
  */
 export function createVehicleMesh(
   spec: VehicleSpec,
   contactShadowMap: THREE.Texture,
   overrideColor?: number,
 ): VehicleRig {
+  if (spec.id === 'veloce_gt') {
+    return createVeloceGtRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
+  }
+
   const root = new THREE.Group();
   const bodyGroup = new THREE.Group();
   root.add(bodyGroup);
