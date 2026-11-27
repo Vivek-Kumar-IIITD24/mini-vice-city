@@ -936,16 +936,16 @@ export function buildVcpdFrontFasciaGeometry(): VcpdFrontFasciaGeometries {
     const yaw = -side * 0.16;
     const xOuter = side * 0.68;
     const yLamp = 0.655;
-    const zLamp = -2.326;
+    const zLamp = -2.315;
 
-    hlHousings.push(makeBox(0.32, 0.104, 0.09, xOuter, yLamp, zLamp, 0, yaw, 0));
-    hlOptics.push(makeBox(0.088, 0.054, 0.036, side * 0.615, yLamp + 0.007, -2.358, 0, yaw, 0));
-    hlOptics.push(makeBox(0.082, 0.050, 0.036, side * 0.725, yLamp + 0.009, -2.340, 0, yaw, 0));
+    hlHousings.push(makeBox(0.32, 0.104, 0.07, xOuter, yLamp, zLamp, 0, yaw, 0));
+    hlOptics.push(makeBox(0.088, 0.054, 0.032, side * 0.615, yLamp + 0.007, -2.360, 0, yaw, 0));
+    hlOptics.push(makeBox(0.082, 0.050, 0.032, side * 0.725, yLamp + 0.009, -2.350, 0, yaw, 0));
     // Crisp high-intensity pursuit LED eyebrow blade
-    hlOptics.push(makeBox(0.24, 0.018, 0.034, side * 0.675, yLamp - 0.033, -2.352, 0, yaw, 0));
+    hlOptics.push(makeBox(0.24, 0.018, 0.030, side * 0.675, yLamp - 0.033, -2.358, 0, yaw, 0));
 
     hlAmber.push(makeBox(0.044, 0.040, 0.048, side * 0.835, yLamp + 0.004, -2.272, 0, -side * 0.42, 0));
-    hlLens.push(makeBox(0.33, 0.108, 0.022, side * 0.684, yLamp, -2.362, 0, yaw, 0));
+    hlLens.push(makeBox(0.33, 0.108, 0.012, side * 0.684, yLamp, -2.374, 0, yaw, 0));
   }
 
   return {
