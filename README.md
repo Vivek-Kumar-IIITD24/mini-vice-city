@@ -186,7 +186,7 @@ bun run dev
 | `npm run build` | `vite build` | Build the production bundle into `dist/` |
 | `npm run preview` | `vite preview` | Preview the production build locally |
 | `npm run lint` | `tsc --noEmit` | Run TypeScript type-checking |
-| `npm run clean` | `rm -rf dist server.js` | Remove build output (`dist/`) *(uses a Unix-style command and may not work in Windows Command Prompt or PowerShell)* |
+| `npm run clean` | `node -e "['dist','server.js'].forEach(p=>require('fs').rmSync(p,{recursive:true,force:true}))"` | Remove build output (`dist/` and `server.js`) using a cross-platform Node.js script |
 
 ---
 
