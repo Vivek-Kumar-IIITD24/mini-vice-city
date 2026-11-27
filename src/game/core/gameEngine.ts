@@ -71,6 +71,19 @@ interface DrivableVehicleEntity {
   body: VehicleBodyState;
 }
 
+export function isWebGL2Supported(): boolean {
+  if (typeof document === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2');
+    if (!gl) return false;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function detectSoftwareWebGL(): boolean {
   try {
     const gl = document.createElement('canvas').getContext('webgl2');
@@ -489,7 +502,10 @@ export class GameEngine {
   }
 
   private computeTargetPixelRatio(settings: GameSettings): number {
-    const baseDpr = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
+    const rawDpr = typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
+      ? window.devicePixelRatio
+      : 1;
+    const baseDpr = this.isSoftwareGl ? 1 : Math.min(rawDpr, 2);
     const qualityMult =
       settings.graphics === GraphicsQuality.Low
         ? 0.75
@@ -707,8 +723,11 @@ export class GameEngine {
       this.fpsSmooth = this.fpsSmooth * 0.9 + Math.min(120, 1 / rawDt) * 0.1;
     }
 
-    // Handle global hotkeys in Playing state
+    // Handle global hotkeys and ensure Web Audio unlocks on first user gesture (e.g. ?autostart=1 or Safari)
     if (this.gameState === GameState.Playing) {
+      if (this.input.consumeUserGesture()) {
+        this.sound.unlock();
+      }
       if (this.input.consumeJustPressed('Escape') || this.input.consumeJustPressed('KeyP')) {
         this.pauseGame();
       } else if (this.input.consumeJustPressed('KeyM')) {
@@ -1372,10 +1391,12 @@ export class GameEngine {
   private handleResize(): void {
     const w = this.mountEl.clientWidth || window.innerWidth;
     const h = this.mountEl.clientHeight || window.innerHeight;
+    const targetPr = this.computeTargetPixelRatio(this.saveData.settings);
     this.cameraRig.resize(w / Math.max(1, h));
+    this.renderer.setPixelRatio(targetPr);
     this.renderer.setSize(w, h);
     if (this.postPipeline) {
-      this.postPipeline.setSize(w, h, this.renderer.getPixelRatio());
+      this.postPipeline.setSize(w, h, targetPr);
     }
   }
 

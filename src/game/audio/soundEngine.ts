@@ -41,6 +41,9 @@ export class SoundEngine {
 
   public unlock(): void {
     if (typeof window === 'undefined') return;
+    if (this.initialized && this.ctx && this.ctx.state === 'running' && !this.suspended) {
+      return;
+    }
     if (!this.initialized) {
       const AudioCtx =
         window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;

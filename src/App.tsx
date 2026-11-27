@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GameEngine } from './game/core/gameEngine';
+import { GameEngine, isWebGL2Supported } from './game/core/gameEngine';
 import { createDefaultSettings } from './game/core/saveSystem';
 import {
   CameraViewMode,
@@ -68,15 +68,33 @@ export default function App() {
 
   const [titleModal, setTitleModal] = useState<'none' | 'settings' | 'controls' | 'credits'>('none');
   const [pauseInitialTab, setPauseInitialTab] = useState<'pause' | 'missions' | 'garage' | 'settings'>('pause');
+  const [webglError, setWebglError] = useState<string | null>(null);
 
   // Mount Three.js GameEngine ONCE inside isolated ref container
   useEffect(() => {
     const mountEl = canvasMountRef.current;
     if (!mountEl) return;
 
-    const engine = new GameEngine(mountEl, (snapshot) => {
-      setHud(snapshot);
-    });
+    if (!isWebGL2Supported()) {
+      setWebglError(
+        'WebGL2 graphics support is unavailable or disabled in this browser. Enable hardware acceleration or update your graphics drivers to run MINI VICE CITY.',
+      );
+      return;
+    }
+
+    let engine: GameEngine;
+    try {
+      engine = new GameEngine(mountEl, (snapshot) => {
+        setHud(snapshot);
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Unable to initialize 3D WebGL2 renderer.';
+      setWebglError(
+        `MINI VICE CITY could not start the 3D WebGL2 renderer (${detail}). Please ensure WebGL2 and hardware acceleration are enabled in your browser.`,
+      );
+      return;
+    }
+
     engineRef.current = engine;
     setSettings(engine.getSettings());
     setHasSave(engine.getHasExistingSave());
@@ -124,6 +142,7 @@ export default function App() {
   // Keyboard shortcuts for Title Screen (Enter/Space to start) & Pause modal Esc resume
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (webglError) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
@@ -153,7 +172,7 @@ export default function App() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [hud.gameState, titleModal, hasSave, handleContinue, handleStartNew]);
+  }, [webglError, hud.gameState, titleModal, hasSave, handleContinue, handleStartNew]);
 
   return (
     <main className="relative w-full h-full overflow-hidden bg-[#090b12]">
@@ -164,8 +183,40 @@ export default function App() {
         onContextMenu={(e) => e.preventDefault()}
       />
 
+      {/* Graceful WebGL2 Unavailable Fallback */}
+      {webglError && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ backgroundColor: '#090b12' }}
+          role="alert"
+        >
+          <div
+            className="w-full max-w-md border border-amber-500/50 p-6 shadow-2xl"
+            style={{ backgroundColor: '#0c101c' }}
+          >
+            <p className="font-display text-xs font-bold uppercase tracking-[0.2em] text-amber-400">
+              WebGL2 Required
+            </p>
+            <h1 className="font-display text-2xl font-black uppercase tracking-[0.14em] text-stone-50 mt-1">
+              MINI VICE CITY
+            </h1>
+            <p className="text-sm text-stone-300 mt-3 leading-relaxed">{webglError}</p>
+            <p className="text-xs text-stone-400 mt-3 leading-relaxed">
+              Supported on desktop Chrome, Firefox, and Safari (Windows, Linux, and macOS) with WebGL2 enabled.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-5 px-5 py-2.5 font-display text-xs font-bold uppercase tracking-[0.16em] bg-amber-500 text-stone-950 hover:bg-amber-400 cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Title Screen */}
-      {hud.gameState === GameState.Title && (
+      {!webglError && hud.gameState === GameState.Title && (
         <TitleScreen
           hasSave={hasSave}
           onPlay={handleStartNew}

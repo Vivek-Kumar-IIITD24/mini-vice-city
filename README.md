@@ -5,7 +5,7 @@
 A browser-based 3D open-world urban exploration and driving game set in a sunlit coastal metropolis, built with procedural Three.js WebGL architecture, React, TypeScript, and Web Audio synthesis.
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5%2B-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)
 ![Three.js](https://img.shields.io/badge/Three.js-r187-000000?style=flat-square&logo=threedotjs&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)
@@ -169,6 +169,13 @@ Accessible from both the **Title Screen** and the **Pause Menu**, all settings a
 
 No API keys or `.env` configuration are required to run the game locally.
 
+Alternatively, if you use [Bun](https://bun.sh/), you can install and start the dev server with:
+
+```bash
+bun install
+bun run dev
+```
+
 ---
 
 ## Development Commands
@@ -179,7 +186,7 @@ No API keys or `.env` configuration are required to run the game locally.
 | `npm run build` | `vite build` | Build the production bundle into `dist/` |
 | `npm run preview` | `vite preview` | Preview the production build locally |
 | `npm run lint` | `tsc --noEmit` | Run TypeScript type-checking |
-| `npm run clean` | `rm -rf dist server.js` | Remove build output (`dist/`) |
+| `npm run clean` | `rm -rf dist server.js` | Remove build output (`dist/`) *(uses a Unix-style command and may not work in Windows Command Prompt or PowerShell)* |
 
 ---
 

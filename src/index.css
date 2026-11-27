@@ -9,6 +9,7 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
+    overscroll-behavior: none;
     background-color: #090b12;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -48,6 +49,21 @@ input[type='range'].vice-slider {
 input[type='range'].vice-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: #f59e0b;
+  border: 2px solid #fff7ed;
+  cursor: pointer;
+}
+
+input[type='range'].vice-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+input[type='range'].vice-slider::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 2px;

@@ -8,6 +8,7 @@ export class InputManager {
   private pointerLocked = false;
   private canvasEl: HTMLElement | null = null;
   private active = false;
+  private pendingGesture = false;
 
   private boundKeyDown: (e: KeyboardEvent) => void;
   private boundKeyUp: (e: KeyboardEvent) => void;
@@ -80,9 +81,15 @@ export class InputManager {
   public requestPointerLock(): void {
     if (!this.canvasEl || !this.active) return;
     try {
-      this.canvasEl.requestPointerLock?.();
+      const maybePromise = this.canvasEl.requestPointerLock?.() as unknown;
+      if (
+        maybePromise &&
+        typeof (maybePromise as Promise<void>).catch === 'function'
+      ) {
+        (maybePromise as Promise<void>).catch(() => {});
+      }
     } catch {
-      // Headless or iframe may decline pointer lock; drag-look still works seamlessly.
+      // Headless, Safari, or iframe may decline pointer lock; drag-look still works seamlessly.
     }
   }
 
@@ -126,10 +133,17 @@ export class InputManager {
     this.justPressed.clear();
   }
 
+  public consumeUserGesture(): boolean {
+    if (!this.pendingGesture) return false;
+    this.pendingGesture = false;
+    return true;
+  }
+
   public clearAll(): void {
     this.held.clear();
     this.justPressed.clear();
     this.dragging = false;
+    this.pendingGesture = false;
     this.mouseDeltaX = 0;
     this.mouseDeltaY = 0;
     this.wheelDelta = 0;
@@ -151,6 +165,9 @@ export class InputManager {
       e.preventDefault();
     }
 
+    if (this.active) {
+      this.pendingGesture = true;
+    }
     if (!this.held.has(code)) {
       this.justPressed.add(code);
     }
@@ -163,6 +180,7 @@ export class InputManager {
 
   private onMouseDown(e: MouseEvent): void {
     if (!this.active) return;
+    this.pendingGesture = true;
     if (e.button === 0 || e.button === 2) {
       this.dragging = true;
       // Only request pointer lock on right-click or explicit canvas double-click,
@@ -180,8 +198,8 @@ export class InputManager {
   private onMouseMove(e: MouseEvent): void {
     if (!this.active) return;
     if (this.pointerLocked || this.dragging) {
-      this.mouseDeltaX += e.movementX;
-      this.mouseDeltaY += e.movementY;
+      this.mouseDeltaX += e.movementX ?? 0;
+      this.mouseDeltaY += e.movementY ?? 0;
     }
   }
 
