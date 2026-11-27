@@ -1,6 +1,22 @@
 import * as THREE from 'three';
 import { VehicleKind, VehicleSpec } from '../types';
 import { createVeloceGtRig, disposeVeloceGtSharedResources } from './veloceGtModel';
+import {
+  createSolsticeRoyaleRig,
+  disposeSolsticeRoyaleSharedResources,
+} from './solsticeRoyaleModel';
+import {
+  createBaysideTitanRig,
+  disposeBaysideTitanSharedResources,
+} from './baysideTitanModel';
+import {
+  createTrafficSedanRig,
+  disposeTrafficSedanSharedResources,
+} from './trafficSedanModel';
+import {
+  createVcpdInterceptorRig,
+  disposeVcpdInterceptorSharedResources,
+} from './vcpdInterceptorModel';
 
 export interface VehiclePaintProfile {
   roughness: number;
@@ -112,12 +128,18 @@ export function disposeSharedVehicleResources(): void {
     cachedBeamTexture = null;
   }
   disposeVeloceGtSharedResources();
+  disposeSolsticeRoyaleSharedResources();
+  disposeBaysideTitanSharedResources();
+  disposeTrafficSedanSharedResources();
+  disposeVcpdInterceptorSharedResources();
 }
 
 /**
  * Builds a composite procedural 3D vehicle pivoted at bottom-center (y = 0).
  * Local forward direction is -Z.
- * Routes Veloce GT (Sports) to the Phase 2A sculpted AAA-style coupe builder.
+ * Routes Veloce GT (Sports), Solstice Royale (Luxury Sedan), Bayside Titan (Luxury SUV),
+ * City Cruiser (Civilian Traffic Sedan), and VCPD Interceptor (Police Pursuit)
+ * to their dedicated sculpted builders.
  */
 export function createVehicleMesh(
   spec: VehicleSpec,
@@ -126,6 +148,18 @@ export function createVehicleMesh(
 ): VehicleRig {
   if (spec.id === 'veloce_gt') {
     return createVeloceGtRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
+  }
+  if (spec.id === 'solstice_royale') {
+    return createSolsticeRoyaleRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
+  }
+  if (spec.id === 'bayside_titan') {
+    return createBaysideTitanRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
+  }
+  if (spec.id === 'traffic_car') {
+    return createTrafficSedanRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
+  }
+  if (spec.id === 'vcpd_interceptor') {
+    return createVcpdInterceptorRig(spec, contactShadowMap, getSoftHeadlightBeamTexture(), overrideColor);
   }
 
   const root = new THREE.Group();

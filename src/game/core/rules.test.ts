@@ -13,7 +13,7 @@ import {
   persistSaveData,
   sanitizeSaveData,
 } from './saveSystem';
-import { generateCityLayout, VEHICLE_CATALOG } from '../world/cityData';
+import { generateCityLayout, TRAFFIC_COLORS, VEHICLE_CATALOG } from '../world/cityData';
 import {
   computeGearLabel,
   createInitialVehicleState,
@@ -31,6 +31,69 @@ import {
   evaluateVeloceBodySection,
 } from '../vehicles/veloceGtGeometry';
 import {
+  SOLSTICE_ROYALE_DIMS,
+  buildSolsticeBodyShellGeometry,
+  buildSolsticeExteriorDetailsGeometry,
+  buildSolsticeFrontGrilleGeometry,
+  buildSolsticeHeadlightsGeometry,
+  buildSolsticeInteriorGeometries,
+  buildSolsticePillarsGeometry,
+  buildSolsticeRearFasciaGeometry,
+  buildSolsticeRearGlassGeometry,
+  buildSolsticeRoofGeometry,
+  buildSolsticeSideWindowGeometry,
+  buildSolsticeWheelParts,
+  buildSolsticeWindshieldGeometry,
+  evaluateSolsticeBodySection,
+} from '../vehicles/solsticeRoyaleGeometry';
+import {
+  BAYSIDE_TITAN_DIMS,
+  buildTitanBodyShellGeometry,
+  buildTitanExteriorDetailsGeometry,
+  buildTitanFrontFasciaGeometry,
+  buildTitanInteriorGeometries,
+  buildTitanPillarsGeometry,
+  buildTitanRearFasciaGeometry,
+  buildTitanRearGlassGeometry,
+  buildTitanRoofGeometry,
+  buildTitanSideWindowGeometry,
+  buildTitanWheelParts,
+  buildTitanWindshieldGeometry,
+  evaluateTitanBodySection,
+  sampleTitanRoofRail,
+} from '../vehicles/baysideTitanGeometry';
+import {
+  TRAFFIC_SEDAN_DIMS,
+  buildTrafficBodyShellGeometry,
+  buildTrafficExteriorDetailsGeometry,
+  buildTrafficFrontFasciaGeometry,
+  buildTrafficGlassGeometry,
+  buildTrafficInteriorGeometry,
+  buildTrafficPillarsGeometry,
+  buildTrafficRearFasciaGeometry,
+  buildTrafficRoofGeometry,
+  buildTrafficWheelParts,
+  evaluateTrafficSedanSection,
+  sampleTrafficSedanRoofRail,
+} from '../vehicles/trafficSedanGeometry';
+import { TrafficSystem } from '../traffic/trafficSystem';
+import {
+  VCPD_INTERCEPTOR_DIMS,
+  buildVcpdBodyShellGeometry,
+  buildVcpdExteriorDetailsGeometry,
+  buildVcpdFrontFasciaGeometry,
+  buildVcpdGlassGeometry,
+  buildVcpdInteriorGeometry,
+  buildVcpdLightbarGeometry,
+  buildVcpdPillarsGeometry,
+  buildVcpdRearFasciaGeometry,
+  buildVcpdRoofGeometry,
+  buildVcpdWheelParts,
+  evaluateVcpdBodySection,
+  sampleVcpdRoofRail,
+} from '../vehicles/vcpdInterceptorGeometry';
+import {
+  PoliceSystem,
   addWantedHeat,
   createInitialWantedState,
   stepWantedCooldown,
@@ -110,6 +173,7 @@ import {
   createVehicleMesh,
   disposeSharedVehicleResources,
   getVehiclePaintMaterialProfile,
+  type VehicleRig,
 } from '../vehicles/vehicleModels';
 import { WorldEffectsAndMarkers } from '../missions/missionMarkers';
 import { DistrictId, GraphicsQuality, TimePreset, VehicleKind, WeatherType } from '../types';
@@ -2002,6 +2066,1103 @@ test('Phase 2B-2: PedestrianSystem preserves sidewalk traversal, player avoidanc
   assert.equal(pedSys.root.children.length, 0);
   dummyShadow.dispose();
 });
+
+test('Phase 2C-1: Solstice Royale parametric three-box saloon profile has executive proportions, upright prow, circular arches, and 4-door cabin aperture distinct from Veloce GT', () => {
+  const prow = evaluateSolsticeBodySection(-2.4);
+  const frontAxle = evaluateSolsticeBodySection(SOLSTICE_ROYALE_DIMS.frontAxleZ);
+  const midDoor = evaluateSolsticeBodySection(0.25);
+  const rearAxle = evaluateSolsticeBodySection(SOLSTICE_ROYALE_DIMS.rearAxleZ);
+  const trunk = evaluateSolsticeBodySection(2.05);
+
+  // Executive saloon is longer, taller, and has a much more upright prow than the wedge-nosed Veloce GT
+  assert.ok(SOLSTICE_ROYALE_DIMS.length > VELOCE_GT_DIMS.length + 0.3, 'Solstice Royale must be longer than Veloce GT');
+  assert.ok(SOLSTICE_ROYALE_DIMS.height > VELOCE_GT_DIMS.height + 0.14, 'Solstice Royale must be taller than Veloce GT');
+  const veloceNose = evaluateVeloceBodySection(-2.2);
+  assert.ok(prow.beltY > veloceNose.beltY + 0.2, 'Solstice Royale prow must sit taller and more upright than Veloce GT nose');
+
+  // Wheelbase and genuine circular wheel-arch clearances above wheelRadius (0.34m)
+  assert.equal(frontAxle.inFrontArch, true);
+  assert.equal(rearAxle.inRearArch, true);
+  assert.ok(
+    frontAxle.sillY > SOLSTICE_ROYALE_DIMS.wheelRadius + 0.38,
+    `front wheel arch crown must clear wheel top cleanly, got ${frontAxle.sillY}`,
+  );
+  assert.ok(
+    rearAxle.sillY > SOLSTICE_ROYALE_DIMS.wheelRadius + 0.38,
+    `rear wheel arch crown must clear wheel top cleanly, got ${rearAxle.sillY}`,
+  );
+  assert.ok(midDoor.sillY >= SOLSTICE_ROYALE_DIMS.groundClearance - 0.01 && midDoor.sillY < 0.28);
+
+  // Long four-door open cabin aperture between cowl and rear glass, closed over long bonnet and formal rear trunk
+  assert.equal(frontAxle.cabinOpenHalfWidth, 0, 'bonnet over front axle must remain closed');
+  assert.ok(midDoor.cabinOpenHalfWidth > 0.65, '4-door cabin aperture must open wide for visible executive interior');
+  assert.equal(trunk.cabinOpenHalfWidth, 0, 'formal rear trunk deck must remain closed');
+  assert.ok(
+    SOLSTICE_ROYALE_DIMS.cabinEndZ - SOLSTICE_ROYALE_DIMS.cabinStartZ >
+      VELOCE_GT_DIMS.cabinEndZ - VELOCE_GT_DIMS.cabinStartZ + 0.4,
+    '4-door executive cabin must span significantly longer than 2-seat sports coupe cabin',
+  );
+});
+
+test('Phase 2C-1: Solstice Royale sculpted geometries have finite vertices, valid outward normals, luxury interior & waterfall grille, and rounded 14-spoke Lathe wheels', () => {
+  const body = buildSolsticeBodyShellGeometry();
+  const { paintedRoof, sunroofGlass } = buildSolsticeRoofGeometry();
+  const windshield = buildSolsticeWindshieldGeometry();
+  const rearGlass = buildSolsticeRearGlassGeometry();
+  const sideL = buildSolsticeSideWindowGeometry(-1);
+  const sideR = buildSolsticeSideWindowGeometry(1);
+  const pillars = buildSolsticePillarsGeometry();
+  const grille = buildSolsticeFrontGrilleGeometry();
+  const headlights = buildSolsticeHeadlightsGeometry();
+  const rearFascia = buildSolsticeRearFasciaGeometry();
+  const extDetails = buildSolsticeExteriorDetailsGeometry();
+  const interior = buildSolsticeInteriorGeometries();
+  const wheel = buildSolsticeWheelParts();
+
+  const checkFiniteAndUnitNormals = (geo: THREE.BufferGeometry, name: string) => {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 12, `${name} should contain valid vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} should have vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len > 0.8 && len < 1.2, `${name} normal ${i} must be unit length, got ${len}`);
+    }
+  };
+
+  checkFiniteAndUnitNormals(body, 'solsticeBodyShell');
+  checkFiniteAndUnitNormals(paintedRoof, 'solsticeRoof');
+  checkFiniteAndUnitNormals(sunroofGlass, 'solsticeSunroof');
+  checkFiniteAndUnitNormals(windshield, 'solsticeWindshield');
+  checkFiniteAndUnitNormals(rearGlass, 'solsticeRearGlass');
+  checkFiniteAndUnitNormals(sideL, 'solsticeSideWindowL');
+  checkFiniteAndUnitNormals(sideR, 'solsticeSideWindowR');
+  checkFiniteAndUnitNormals(pillars.paintedPillars, 'solsticePaintedPillars');
+  checkFiniteAndUnitNormals(grille.grilleChrome, 'solsticeWaterfallGrille');
+  checkFiniteAndUnitNormals(headlights.emissiveOptics, 'solsticeHeadlights');
+  checkFiniteAndUnitNormals(rearFascia.taillightEmissive, 'solsticeTaillights');
+  checkFiniteAndUnitNormals(interior.leatherSeats, 'solsticeExecutiveSeats');
+  checkFiniteAndUnitNormals(wheel.tireGeo, 'solsticeTire');
+  checkFiniteAndUnitNormals(wheel.rimAlloyGeo, 'solstice14SpokeRim');
+
+  // Verify outward normal orientations on greenhouse surfaces
+  const avgNormal = (geo: THREE.BufferGeometry) => {
+    const n = geo.getAttribute('normal');
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < n.count; i++) {
+      x += n.getX(i); y += n.getY(i); z += n.getZ(i);
+    }
+    return { x: x / n.count, y: y / n.count, z: z / n.count };
+  };
+
+  const nRoof = avgNormal(paintedRoof);
+  const nSun = avgNormal(sunroofGlass);
+  const nWind = avgNormal(windshield);
+  const nRear = avgNormal(rearGlass);
+  const nSideL = avgNormal(sideL);
+  const nSideR = avgNormal(sideR);
+  assert.ok(nRoof.y > 0.85, `roof normals must point upward (+Y), got ${nRoof.y}`);
+  assert.ok(nSun.y > 0.85, `sunroof normals must point upward (+Y), got ${nSun.y}`);
+  assert.ok(nWind.y > 0.45 && nWind.z < -0.45, `windshield normals must point up-forward, got (${nWind.y}, ${nWind.z})`);
+  assert.ok(nRear.y > 0.45 && nRear.z > 0.45, `rear glass normals must point up-rearward, got (${nRear.y}, ${nRear.z})`);
+  assert.ok(nSideL.x < -0.6, `left side window normals must point outward (-X), got ${nSideL.x}`);
+  assert.ok(nSideR.x > 0.6, `right side window normals must point outward (+X), got ${nSideR.x}`);
+
+  // Verify overall body dimensions match catalog (4.90m x 2.10m) and tire diameter matches wheelRadius (0.68m)
+  body.computeBoundingBox();
+  const bSize = new THREE.Vector3();
+  body.boundingBox!.getSize(bSize);
+  assert.ok(Math.abs(bSize.z - VEHICLE_CATALOG.solstice_royale.length) < 0.08, `body length should match 4.90m, got ${bSize.z}`);
+  assert.ok(bSize.x > 1.95 && bSize.x <= 2.14, `body width should match luxury sedan stance, got ${bSize.x}`);
+
+  wheel.tireGeo.computeBoundingBox();
+  const tSize = new THREE.Vector3();
+  wheel.tireGeo.boundingBox!.getSize(tSize);
+  assert.ok(Math.abs(tSize.y - SOLSTICE_ROYALE_DIMS.wheelRadius * 2) < 0.02, 'tire diameter must match 0.68m');
+  assert.ok(Math.abs(tSize.x - SOLSTICE_ROYALE_DIMS.wheelWidth) < 0.02, 'tire width must match 0.25m');
+
+  // Verify four-seat interior spans front & rear rows inside cabin bounds
+  interior.leatherSeats.computeBoundingBox();
+  const seatBox = interior.leatherSeats.boundingBox!;
+  assert.ok(seatBox.min.z < -0.15 && seatBox.max.z > 0.95, 'interior seats must include both front seats and rear lounge bench');
+
+  for (const g of [
+    body, paintedRoof, sunroofGlass, windshield, rearGlass, sideL, sideR,
+    pillars.paintedPillars, pillars.bPillars, pillars.chromeWindowTrim,
+    grille.grilleChrome, grille.grilleRecess, grille.bumperAccentBar,
+    headlights.housings, headlights.chromeBezels, headlights.emissiveOptics, headlights.amberMarkers, headlights.clearLenses,
+    rearFascia.taillightEmissive, rearFascia.rearChromeTrim, rearFascia.rearDarkCove, rearFascia.exhaustOuter, rearFascia.exhaustInner, rearFascia.licensePlate, rearFascia.rearEmblem,
+    extDetails.mirrorHousings, extDetails.mirrorStalks, extDetails.mirrorGlass, extDetails.chromeHandlesAndCrest, extDetails.sideSpearAccent, extDetails.underbodyAndLiners, extDetails.wipers, extDetails.panelSeams,
+    interior.cabinTub, interior.leatherSeats, interior.woodTrim, interior.dashboard, interior.steeringWheel, interior.clusterScreen, interior.centerScreen, interior.rearViewMirror,
+    wheel.tireGeo, wheel.rimAlloyGeo, wheel.centerCapGeo, wheel.innerBarrelGeo, wheel.rotorGeo, wheel.caliperGeo,
+  ]) {
+    g.dispose();
+  }
+});
+
+test('Phase 2C-1: Solstice Royale VehicleRig preserves physics/wheel pivots, transparent glass over 4-seat interior LOD, PBR materials, disposal, and other vehicle branches', () => {
+  const dummyShadow = new THREE.Texture();
+  const rig1 = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow);
+  const rig2 = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow, 0x1e293b);
+
+  // VehicleRig wheel pivot & steering hierarchy
+  assert.equal(rig1.wheels.length, 4);
+  assert.ok(rig1.frontLeftPivot.children.includes(rig1.wheels[0]), 'frontLeftPivot must parent front-left spinning wheel');
+  assert.ok(rig1.frontRightPivot.children.includes(rig1.wheels[1]), 'frontRightPivot must parent front-right spinning wheel');
+  assert.ok(rig1.frontLeftPivot.children.length >= 2, 'frontLeftPivot must also mount stationary brake caliper');
+  assert.ok(Math.abs(rig1.frontLeftPivot.position.y - SOLSTICE_ROYALE_DIMS.wheelRadius) < 1e-5);
+  assert.ok(rig1.frontLeftPivot.position.z < -1.4 && rig1.wheels[2].position.z > 1.4, 'executive long wheelbase placement');
+
+  // Verify steering & physics step work identically on Solstice Royale
+  let phys = createInitialVehicleState(25.5, -20, Math.PI);
+  for (let i = 0; i < 20; i++) {
+    phys = stepVehiclePhysics(
+      phys,
+      VEHICLE_CATALOG.solstice_royale,
+      { throttle: 1, brake: 0, steer: 0.6, handbrake: false },
+      1 / 30,
+      [],
+    );
+  }
+  rig1.frontLeftPivot.rotation.y = phys.steerAngle;
+  rig1.frontRightPivot.rotation.y = phys.steerAngle;
+  for (const w of rig1.wheels) w.rotation.x = -phys.wheelSpin;
+  assert.ok(Math.abs(rig1.frontLeftPivot.rotation.y) > 0.1, 'front steering pivot must respond to physics steerAngle');
+  assert.ok(Math.abs(rig1.wheels[0].rotation.x) > 1.0, 'wheels must spin smoothly from physics wheelSpin');
+
+  // Reset pivot transforms before ground-plane bounding check
+  rig1.frontLeftPivot.rotation.y = 0;
+  rig1.frontRightPivot.rotation.y = 0;
+  for (const w of rig1.wheels) w.rotation.x = 0;
+
+  // PBR luxury paint & transparent solar glass revealing interior
+  assert.ok(rig1.paintMat instanceof THREE.MeshPhysicalMaterial);
+  assert.equal(rig1.paintMat.color.getHex(), VEHICLE_CATALOG.solstice_royale.color);
+  assert.equal(rig2.paintMat.color.getHex(), 0x1e293b, 'overrideColor must apply cleanly to Solstice Royale');
+  assert.ok(rig1.paintMat.clearcoat >= 0.9, 'Solstice Royale lacquer must have luxury clearcoat');
+  assert.ok(rig1.glassMat instanceof THREE.MeshPhysicalMaterial);
+  assert.equal(rig1.glassMat.transparent, true);
+  assert.ok(rig1.glassMat.opacity >= 0.25 && rig1.glassMat.opacity <= 0.5, 'glass must stay transparent enough to show interior');
+  assert.equal(rig1.glassMat.depthWrite, false);
+
+  // 3-tier LOD with 4-seat executive interior, walnut wood trim, wipers & emblem
+  const lod = rig1.bodyGroup.children.find((c): c is THREE.LOD => c instanceof THREE.LOD);
+  assert.ok(lod, 'Solstice Royale bodyGroup must include distance-based THREE.LOD');
+  assert.ok(lod.levels.length >= 3, 'Solstice Royale LOD must have near, medium, and far tiers');
+  assert.ok(lod.levels[0].object.children.length >= 11, 'near LOD must include full interior, wood trim, handles, emblem, wipers, and seams');
+  assert.ok(
+    lod.levels[1].object.children.length >= 3 &&
+      lod.levels[1].object.children.length < lod.levels[0].object.children.length,
+    'medium LOD must reduce draw complexity relative to near LOD',
+  );
+
+  // Grounding & clearance verification (no wheels or liners piercing y < 0; height matches ~1.42m)
+  rig1.root.updateMatrixWorld(true);
+  const rigBox = new THREE.Box3().setFromObject(rig1.root);
+  const bodyBox = new THREE.Box3().setFromObject(rig1.bodyGroup);
+  assert.ok(rigBox.min.y >= -0.002, `Solstice Royale must sit flush on ground y=0, got min.y=${rigBox.min.y}`);
+  assert.ok(bodyBox.min.y >= 0.14, `Solstice Royale body & liners must keep clean ground clearance, got min.y=${bodyBox.min.y}`);
+  assert.ok(Math.abs(rigBox.max.y - VEHICLE_CATALOG.solstice_royale.height) < 0.06, `roof height should match ~1.42m, got ${rigBox.max.y}`);
+
+  // Shared GPU geometry cache reused across multiple Solstice Royale instances
+  const sBody1 = rig1.bodyGroup.children[0] as THREE.Mesh;
+  const sBody2 = rig2.bodyGroup.children[0] as THREE.Mesh;
+  assert.equal(sBody1.geometry, sBody2.geometry, 'multiple Solstice Royale instances must reuse shared cached geometry');
+
+  // Regression protection: Veloce GT, Bayside Titan, and VCPD Interceptor remain distinct and functional
+  const veloceRig = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const titanRig = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow);
+  const policeRig = createVehicleMesh(VEHICLE_CATALOG.vcpd_interceptor, dummyShadow);
+  assert.notEqual((veloceRig.bodyGroup.children[0] as THREE.Mesh).geometry, sBody1.geometry, 'Veloce GT must keep its own unique geometry');
+  assert.notEqual((titanRig.bodyGroup.children[0] as THREE.Mesh).geometry, sBody1.geometry, 'Bayside Titan must keep its own unique geometry');
+  assert.notEqual((policeRig.bodyGroup.children[0] as THREE.Mesh).geometry, sBody1.geometry, 'VCPD Interceptor must keep its own unique geometry');
+  assert.ok(policeRig.policeRedMat && policeRig.policeBlueMat, 'VCPD Interceptor emergency lights must stay intact');
+
+  rig1.dispose();
+  rig2.dispose();
+  veloceRig.dispose();
+  titanRig.dispose();
+  policeRig.dispose();
+  disposeSharedVehicleResources();
+  dummyShadow.dispose();
+});
+
+test('Phase 2C-2: Bayside Titan parametric two-box luxury SUV profile has elevated ground clearance, tall SUV arches, full-length 4-door + cargo cabin aperture, and proportions distinct from Veloce GT and Solstice Royale', () => {
+  const nose = evaluateTitanBodySection(-2.4);
+  const frontArch = evaluateTitanBodySection(BAYSIDE_TITAN_DIMS.frontAxleZ);
+  const midDoor = evaluateTitanBodySection(0.15);
+  const rearArch = evaluateTitanBodySection(BAYSIDE_TITAN_DIMS.rearAxleZ);
+  const cargoBay = evaluateTitanBodySection(1.75);
+  const tail = evaluateTitanBodySection(2.42);
+  const roofMid = sampleTitanRoofRail(0.8);
+
+  // Elevated all-terrain ride height & tall commanding SUV beltline vs sedan & coupe
+  const solsticeMid = evaluateSolsticeBodySection(0.15);
+  const veloceMid = evaluateVeloceBodySection(0.15);
+  assert.ok(
+    midDoor.sillY >= 0.33 && midDoor.sillY > solsticeMid.sillY + 0.1,
+    `SUV ground clearance must exceed Solstice Royale sedan by >10cm, got titan=${midDoor.sillY}, solstice=${solsticeMid.sillY}`,
+  );
+  assert.ok(
+    midDoor.beltY > solsticeMid.beltY + 0.2 && midDoor.beltY > veloceMid.beltY + 0.28,
+    `SUV beltline must stand noticeably taller than sedan and sports coupe, got ${midDoor.beltY}`,
+  );
+  assert.ok(
+    roofMid.crownY > 1.72 && roofMid.crownY < 1.82,
+    `SUV roof crown must align below 1.82m rail top, got ${roofMid.crownY}`,
+  );
+
+  // Muscular flared haunches & tall wheel-arch clearance around 0.42m wheels
+  assert.equal(frontArch.inFrontArch, true);
+  assert.equal(rearArch.inRearArch, true);
+  assert.ok(
+    frontArch.sillY > BAYSIDE_TITAN_DIMS.wheelRadius + 0.48,
+    `front SUV wheel arch must clear 0.42m wheel with travel room, got ${frontArch.sillY}`,
+  );
+  assert.ok(
+    rearArch.sillY > BAYSIDE_TITAN_DIMS.wheelRadius + 0.48,
+    `rear SUV wheel arch must clear 0.42m wheel with travel room, got ${rearArch.sillY}`,
+  );
+  assert.ok(
+    frontArch.halfWidthMid > midDoor.halfWidthMid + 0.02,
+    'front SUV fender haunch must flare cleanly beyond mid-door waist',
+  );
+  assert.ok(
+    rearArch.halfWidthMid > midDoor.halfWidthMid + 0.02,
+    'rear SUV haunch must flare cleanly beyond mid-door waist',
+  );
+
+  // Two-box SUV greenhouse spans all four doors AND rear cargo bay (unlike 3-box sedan trunk)
+  assert.equal(nose.cabinOpenHalfWidth, 0, 'clamshell bonnet must remain closed');
+  assert.ok(midDoor.cabinOpenHalfWidth > 0.72, '4-door SUV cabin must open wide for visible interior');
+  assert.ok(cargoBay.cabinOpenHalfWidth > 0.65, 'two-box SUV rear cargo bay must remain open under rear quarter glass');
+  assert.equal(tail.cabinOpenHalfWidth, 0, 'rear tailgate upper cap must close cleanly');
+  assert.ok(
+    BAYSIDE_TITAN_DIMS.cabinEndZ - BAYSIDE_TITAN_DIMS.cabinStartZ >
+      SOLSTICE_ROYALE_DIMS.cabinEndZ - SOLSTICE_ROYALE_DIMS.cabinStartZ + 0.6,
+    'two-box SUV cabin + cargo aperture must span significantly longer than 3-box sedan cabin',
+  );
+});
+
+test('Phase 2C-2: Bayside Titan sculpted geometries have finite vertices, valid outward normals, SUV all-terrain exterior, 2-row + cargo interior, and rounded 0.42m Lathe wheels', () => {
+  const body = buildTitanBodyShellGeometry();
+  const roof = buildTitanRoofGeometry();
+  const windshield = buildTitanWindshieldGeometry();
+  const rearGlass = buildTitanRearGlassGeometry();
+  const sideL = buildTitanSideWindowGeometry(-1);
+  const sideR = buildTitanSideWindowGeometry(1);
+  const pillars = buildTitanPillarsGeometry();
+  const front = buildTitanFrontFasciaGeometry();
+  const rear = buildTitanRearFasciaGeometry();
+  const ext = buildTitanExteriorDetailsGeometry();
+  const interior = buildTitanInteriorGeometries();
+  const wheel = buildTitanWheelParts();
+
+  const checkFiniteAndUnitNormals = (geo: THREE.BufferGeometry, name: string) => {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 12, `${name} should contain valid vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} should have vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len > 0.8 && len < 1.2, `${name} normal ${i} must be unit length, got ${len}`);
+    }
+  };
+
+  checkFiniteAndUnitNormals(body, 'titanBodyShell');
+  checkFiniteAndUnitNormals(roof.paintedRoof, 'titanRoof');
+  checkFiniteAndUnitNormals(roof.moonroofGlass, 'titanMoonroof');
+  checkFiniteAndUnitNormals(roof.roofRails, 'titanRoofRails');
+  checkFiniteAndUnitNormals(roof.roofSpoiler, 'titanRoofSpoiler');
+  checkFiniteAndUnitNormals(windshield, 'titanWindshield');
+  checkFiniteAndUnitNormals(rearGlass, 'titanRearGlass');
+  checkFiniteAndUnitNormals(sideL, 'titanSideWindowL');
+  checkFiniteAndUnitNormals(sideR, 'titanSideWindowR');
+  checkFiniteAndUnitNormals(pillars.glossPillars, 'titanPillars');
+  checkFiniteAndUnitNormals(front.grilleSatin, 'titanGrille');
+  checkFiniteAndUnitNormals(front.skidPlateSatin, 'titanFrontSkid');
+  checkFiniteAndUnitNormals(front.hlEmissiveOptics, 'titanMatrixHeadlights');
+  checkFiniteAndUnitNormals(rear.taillightEmissive, 'titanTailLightbar');
+  checkFiniteAndUnitNormals(ext.fenderFlaresAndCladding, 'titanFenderFlares');
+  checkFiniteAndUnitNormals(ext.sideStepsSatin, 'titanSideSteps');
+  checkFiniteAndUnitNormals(interior.leatherSeats, 'titanSuvSeats');
+  checkFiniteAndUnitNormals(wheel.tireGeo, 'titanAllTerrainTire');
+  checkFiniteAndUnitNormals(wheel.rimAlloyGeo, 'titan6TwinSpokeRim');
+  checkFiniteAndUnitNormals(wheel.caliperGeo, 'titanBrakeCaliper');
+
+  // Verify outward normal orientations on greenhouse surfaces
+  const avgNormal = (geo: THREE.BufferGeometry) => {
+    const n = geo.getAttribute('normal');
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < n.count; i++) {
+      x += n.getX(i); y += n.getY(i); z += n.getZ(i);
+    }
+    return { x: x / n.count, y: y / n.count, z: z / n.count };
+  };
+
+  const nRoof = avgNormal(roof.paintedRoof);
+  const nMoon = avgNormal(roof.moonroofGlass);
+  const nWind = avgNormal(windshield);
+  const nRear = avgNormal(rearGlass);
+  const nSideL = avgNormal(sideL);
+  const nSideR = avgNormal(sideR);
+  assert.ok(nRoof.y > 0.85, `SUV roof normals must point upward (+Y), got ${nRoof.y}`);
+  assert.ok(nMoon.y > 0.85, `SUV moonroof normals must point upward (+Y), got ${nMoon.y}`);
+  assert.ok(nWind.y > 0.4 && nWind.z < -0.5, `SUV windshield normals must point up-forward, got (${nWind.y}, ${nWind.z})`);
+  assert.ok(nRear.y > 0.35 && nRear.z > 0.5, `SUV rear tailgate glass normals must point up-rearward, got (${nRear.y}, ${nRear.z})`);
+  assert.ok(nSideL.x < -0.6, `SUV left side window normals must point outward (-X), got ${nSideL.x}`);
+  assert.ok(nSideR.x > 0.6, `SUV right side window normals must point outward (+X), got ${nSideR.x}`);
+
+  // Verify overall body dimensions match catalog (4.95m x 2.22m) and wheel dimensions match SUV spec (0.84m dia x 0.31m wide)
+  body.computeBoundingBox();
+  const bSize = new THREE.Vector3();
+  body.boundingBox!.getSize(bSize);
+  assert.ok(Math.abs(bSize.z - VEHICLE_CATALOG.bayside_titan.length) < 0.08, `SUV length should match 4.95m, got ${bSize.z}`);
+  assert.ok(bSize.x > 2.1 && bSize.x <= 2.25, `SUV width should match ~2.22m stance, got ${bSize.x}`);
+
+  wheel.tireGeo.computeBoundingBox();
+  const tSize = new THREE.Vector3();
+  wheel.tireGeo.boundingBox!.getSize(tSize);
+  assert.ok(Math.abs(tSize.y - BAYSIDE_TITAN_DIMS.wheelRadius * 2) < 0.02, `SUV tyre diameter must match 0.84m, got ${tSize.y}`);
+  assert.ok(Math.abs(tSize.z - BAYSIDE_TITAN_DIMS.wheelRadius * 2) < 0.02, `SUV tyre must be circular in YZ plane, got ${tSize.z}`);
+  assert.ok(Math.abs(tSize.x - BAYSIDE_TITAN_DIMS.wheelWidth) < 0.02, `SUV tyre width must match 0.31m, got ${tSize.x}`);
+  assert.ok(tSize.x > SOLSTICE_ROYALE_DIMS.wheelWidth + 0.04, 'all-terrain SUV tyres must be noticeably wider than sedan tyres');
+
+  // Verify 2-row seats + rear cargo deck span interior bounds cleanly
+  interior.leatherSeats.computeBoundingBox();
+  const seatBox = interior.leatherSeats.boundingBox!;
+  assert.ok(seatBox.min.z < -0.15 && seatBox.max.z > 1.15, 'SUV interior seats must include front captain seats and 3-across rear bench');
+  interior.cabinTub.computeBoundingBox();
+  assert.ok(interior.cabinTub.boundingBox!.max.z > 2.0, 'SUV cabin tub must extend into rear luggage cargo bay');
+
+  for (const g of [
+    body, roof.paintedRoof, roof.moonroofGlass, roof.roofRails, roof.roofSpoiler,
+    windshield, rearGlass, sideL, sideR,
+    pillars.glossPillars, pillars.satinWindowTrim,
+    front.grilleSatin, front.grilleMesh, front.bumperMatte, front.skidPlateSatin,
+    front.hlHousings, front.hlChromeBezels, front.hlEmissiveOptics, front.hlAmberMarkers, front.hlClearLenses,
+    rear.taillightEmissive, rear.rearDarkHousing, rear.rearSatinTrim, rear.exhaustOuter, rear.exhaustInner,
+    rear.licensePlate, rear.rearEmblem, rear.hoodEmblem,
+    ext.fenderFlaresAndCladding, ext.sideStepsSatin, ext.mirrorHousings, ext.mirrorStalks, ext.mirrorGlass,
+    ext.satinHandlesAndBadges, ext.underbodyAndLiners, ext.wipers, ext.panelSeams,
+    interior.cabinTub, interior.leatherSeats, interior.satinInteriorTrim, interior.dashboard,
+    interior.steeringWheel, interior.cockpitDisplay, interior.rearViewMirror,
+    wheel.tireGeo, wheel.rimAlloyGeo, wheel.rimPocketGeo, wheel.centerCapGeo,
+    wheel.innerBarrelGeo, wheel.rotorGeo, wheel.caliperGeo,
+  ]) {
+    g.dispose();
+  }
+});
+
+test('Phase 2C-2: Bayside Titan VehicleRig preserves physics/0.42m wheel pivots, steering, transparent glass over SUV interior LOD, PBR materials, disposal, and non-regression of Veloce GT & Solstice Royale', () => {
+  const dummyShadow = new THREE.Texture();
+  const rig1 = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow);
+  const rig2 = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow, 0x334155);
+
+  // VehicleRig wheel pivot, stationary calipers & SUV wheel dimensions
+  assert.equal(rig1.wheels.length, 4);
+  assert.ok(rig1.frontLeftPivot.children.includes(rig1.wheels[0]), 'frontLeftPivot must parent front-left spinning wheel');
+  assert.ok(rig1.frontRightPivot.children.includes(rig1.wheels[1]), 'frontRightPivot must parent front-right spinning wheel');
+  assert.ok(rig1.frontLeftPivot.children.length >= 2, 'frontLeftPivot must mount stationary SUV brake caliper');
+  assert.ok(Math.abs(rig1.frontLeftPivot.position.y - BAYSIDE_TITAN_DIMS.wheelRadius) < 1e-5, 'wheel center Y must match 0.42m radius');
+  assert.ok(Math.abs(rig1.frontLeftPivot.position.x + BAYSIDE_TITAN_DIMS.frontTrackHalf) < 1e-5);
+  assert.ok(rig1.frontLeftPivot.position.z < -1.45 && rig1.wheels[2].position.z > 1.45, 'SUV wheelbase placement');
+
+  // Verify steering & physics step match Bayside Titan catalog & 0.42m wheelSpin
+  let phys = createInitialVehicleState(91.5, 84, 0);
+  for (let i = 0; i < 20; i++) {
+    phys = stepVehiclePhysics(
+      phys,
+      VEHICLE_CATALOG.bayside_titan,
+      { throttle: 1, brake: 0, steer: -0.65, handbrake: false },
+      1 / 30,
+      [],
+    );
+  }
+  rig1.frontLeftPivot.rotation.y = phys.steerAngle;
+  rig1.frontRightPivot.rotation.y = phys.steerAngle;
+  for (const w of rig1.wheels) w.rotation.x = -phys.wheelSpin;
+  assert.ok(Math.abs(rig1.frontLeftPivot.rotation.y) > 0.1, 'front steering pivot must respond to physics steerAngle');
+  assert.ok(Math.abs(rig1.wheels[0].rotation.x) > 0.8, 'all-terrain SUV wheels must spin cleanly from physics wheelSpin');
+
+  // Reset pivot transforms before ground-plane bounding check
+  rig1.frontLeftPivot.rotation.y = 0;
+  rig1.frontRightPivot.rotation.y = 0;
+  for (const w of rig1.wheels) w.rotation.x = 0;
+
+  // PBR luxury SUV satin-clearcoat paint & transparent glass revealing interior
+  assert.ok(rig1.paintMat instanceof THREE.MeshPhysicalMaterial);
+  assert.equal(rig1.paintMat.color.getHex(), VEHICLE_CATALOG.bayside_titan.color);
+  assert.equal(rig2.paintMat.color.getHex(), 0x334155, 'overrideColor must apply cleanly to Bayside Titan');
+  assert.ok(rig1.paintMat.clearcoat >= 0.75 && rig1.paintMat.clearcoat < 0.9, 'Bayside Titan must preserve rugged satin-clearcoat SUV profile');
+  assert.ok(rig1.glassMat instanceof THREE.MeshPhysicalMaterial);
+  assert.equal(rig1.glassMat.transparent, true);
+  assert.ok(rig1.glassMat.opacity >= 0.25 && rig1.glassMat.opacity <= 0.5, 'SUV glass must stay transparent enough to reveal interior');
+  assert.equal(rig1.glassMat.depthWrite, false);
+
+  // Headlight, brake-light & headlight beam integration contract
+  assert.ok(rig1.headlightMat instanceof THREE.MeshStandardMaterial);
+  assert.ok(rig1.brakeLightMat instanceof THREE.MeshStandardMaterial);
+  assert.ok(rig1.headlightBeam instanceof THREE.Mesh);
+
+  // 3-tier LOD with 2-row + cargo SUV interior, brushed trim, emblems, wipers & flush seams
+  const lod = rig1.bodyGroup.children.find((c): c is THREE.LOD => c instanceof THREE.LOD);
+  assert.ok(lod, 'Bayside Titan bodyGroup must include distance-based THREE.LOD');
+  assert.ok(lod.levels.length >= 3, 'Bayside Titan LOD must have near, medium, and far tiers');
+  assert.ok(lod.levels[0].object.children.length >= 11, 'near LOD must include full interior, brushed trim, handles, emblems, wipers, and seams');
+  assert.ok(
+    lod.levels[1].object.children.length >= 3 &&
+      lod.levels[1].object.children.length < lod.levels[0].object.children.length,
+    'medium LOD must reduce draw complexity relative to near LOD',
+  );
+
+  // Grounding, elevated SUV clearance & overall roof-rail height verification (~1.82m)
+  rig1.root.updateMatrixWorld(true);
+  const rigBox = new THREE.Box3().setFromObject(rig1.root);
+  const bodyBox = new THREE.Box3().setFromObject(rig1.bodyGroup);
+  assert.ok(rigBox.min.y >= -0.002, `Bayside Titan must sit flush on ground y=0, got min.y=${rigBox.min.y}`);
+  assert.ok(bodyBox.min.y >= 0.28, `Bayside Titan body & side steps must preserve elevated SUV ground clearance, got min.y=${bodyBox.min.y}`);
+  assert.ok(
+    Math.abs(rigBox.max.y - VEHICLE_CATALOG.bayside_titan.height) < 0.06,
+    `Bayside Titan roof-rail height should match catalog ~1.82m, got ${rigBox.max.y}`,
+  );
+
+  // Shared GPU geometry cache reused across multiple Bayside Titan instances
+  const tBody1 = rig1.bodyGroup.children[0] as THREE.Mesh;
+  const tBody2 = rig2.bodyGroup.children[0] as THREE.Mesh;
+  assert.equal(tBody1.geometry, tBody2.geometry, 'multiple Bayside Titan instances must reuse shared cached geometry');
+
+  // Non-regression: Veloce GT, Solstice Royale, and VCPD Interceptor remain distinct and intact
+  const veloceRig = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const solsticeRig = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow);
+  const policeRig = createVehicleMesh(VEHICLE_CATALOG.vcpd_interceptor, dummyShadow);
+  assert.notEqual((veloceRig.bodyGroup.children[0] as THREE.Mesh).geometry, tBody1.geometry, 'Veloce GT must keep its own unique geometry');
+  assert.notEqual((solsticeRig.bodyGroup.children[0] as THREE.Mesh).geometry, tBody1.geometry, 'Solstice Royale must keep its own unique geometry');
+  assert.notEqual((policeRig.bodyGroup.children[0] as THREE.Mesh).geometry, tBody1.geometry, 'VCPD Interceptor must keep its own unique geometry');
+  assert.ok(policeRig.policeRedMat && policeRig.policeBlueMat, 'VCPD Interceptor emergency lightbar must remain intact');
+
+  rig1.dispose();
+  rig2.dispose();
+  veloceRig.dispose();
+  solsticeRig.dispose();
+  policeRig.dispose();
+  disposeSharedVehicleResources();
+  dummyShadow.dispose();
+});
+
+test('Phase 2C-3A: Civilian traffic sedan parametric profile enforces compact everyday 4-door proportions distinct from Veloce GT, Solstice Royale, and Bayside Titan', () => {
+  // Exact spec dimensions matching TRAFFIC_SEDAN_SPEC (4.35 x 1.94 x 1.38, wheelRadius = 0.34)
+  assert.equal(TRAFFIC_SEDAN_DIMS.length, 4.35);
+  assert.equal(TRAFFIC_SEDAN_DIMS.width, 1.94);
+  assert.equal(TRAFFIC_SEDAN_DIMS.height, 1.38);
+  assert.equal(TRAFFIC_SEDAN_DIMS.wheelRadius, 0.34);
+  assert.equal(TRAFFIC_SEDAN_DIMS.wheelWidth, 0.23);
+
+  // Distinct compact commuter envelope compared to all other upgraded vehicles
+  assert.ok(
+    TRAFFIC_SEDAN_DIMS.length < SOLSTICE_ROYALE_DIMS.length - 0.5,
+    'City Cruiser must be clearly more compact than the Solstice Royale flagship sedan',
+  );
+  assert.ok(
+    TRAFFIC_SEDAN_DIMS.width < SOLSTICE_ROYALE_DIMS.width - 0.14,
+    'City Cruiser must be narrower than Solstice Royale',
+  );
+  assert.ok(
+    TRAFFIC_SEDAN_DIMS.height > VELOCE_GT_DIMS.height + 0.1 &&
+      TRAFFIC_SEDAN_DIMS.height < BAYSIDE_TITAN_DIMS.height - 0.4,
+    'City Cruiser height must sit cleanly between Veloce GT sports coupe and Bayside Titan SUV',
+  );
+
+  // Cross-section validity along the full body length [-2.175, +2.175]
+  const samples = [-2.175, -1.8, -1.34, -0.72, 0.0, 0.65, 1.34, 1.8, 2.175];
+  for (const z of samples) {
+    const s = evaluateTrafficSedanSection(z);
+    assert.ok(Number.isFinite(s.sillY) && Number.isFinite(s.beltY) && Number.isFinite(s.deckY));
+    assert.ok(s.halfWidthMid <= TRAFFIC_SEDAN_DIMS.width * 0.5 + 0.002, `width exceeds spec at z=${z}`);
+    assert.ok(s.beltY > s.lowerBeltY && s.lowerBeltY > s.sillY, `monotonic vertical profile violated at z=${z}`);
+    assert.ok(s.sillY >= TRAFFIC_SEDAN_DIMS.groundClearance - 0.005, `sill dips below clearance at z=${z}`);
+  }
+
+  // Front and rear wheel arches clear the 0.34m commuter wheels
+  const frontArchSec = evaluateTrafficSedanSection(TRAFFIC_SEDAN_DIMS.frontAxleZ);
+  const rearArchSec = evaluateTrafficSedanSection(TRAFFIC_SEDAN_DIMS.rearAxleZ);
+  assert.equal(frontArchSec.inFrontArch, true);
+  assert.equal(rearArchSec.inRearArch, true);
+  assert.ok(
+    frontArchSec.sillY >= TRAFFIC_SEDAN_DIMS.wheelRadius + 0.37,
+    `front wheel arch must clear 0.34m wheel cleanly, got ${frontArchSec.sillY}`,
+  );
+  assert.ok(
+    rearArchSec.sillY >= TRAFFIC_SEDAN_DIMS.wheelRadius + 0.37,
+    `rear wheel arch must clear 0.34m wheel cleanly, got ${rearArchSec.sillY}`,
+  );
+
+  // Compact 4-door cabin aperture open mid-cabin and closed at hood/trunk
+  const midCabin = evaluateTrafficSedanSection(0.2);
+  const hoodMid = evaluateTrafficSedanSection(-1.45);
+  const trunkMid = evaluateTrafficSedanSection(1.85);
+  assert.ok(midCabin.cabinOpenHalfWidth > 0.65, '4-door cabin aperture must be open across mid-cabin');
+  assert.equal(hoodMid.cabinOpenHalfWidth, 0, 'hood section must remain closed');
+  assert.equal(trunkMid.cabinOpenHalfWidth, 0, 'trunk deck section must remain closed');
+
+  // Roofline hits ~1.38m crown cleanly
+  const roofPeak = sampleTrafficSedanRoofRail(0.34);
+  assert.ok(
+    Math.abs(roofPeak.crownY - TRAFFIC_SEDAN_DIMS.height) < 0.025,
+    `roof peak must match 1.38m spec height, got ${roofPeak.crownY}`,
+  );
+});
+
+test('Phase 2C-3A: Civilian traffic sedan geometries have valid finite buffers, outward normals, solid 3D roof edges, rounded 0.34m wheels, and visible interior', () => {
+  const bodyShell = buildTrafficBodyShellGeometry();
+  const roof = buildTrafficRoofGeometry();
+  const glass = buildTrafficGlassGeometry();
+  const pillars = buildTrafficPillarsGeometry();
+  const front = buildTrafficFrontFasciaGeometry();
+  const rear = buildTrafficRearFasciaGeometry();
+  const ext = buildTrafficExteriorDetailsGeometry();
+  const interior = buildTrafficInteriorGeometry();
+  const wheel = buildTrafficWheelParts();
+
+  const allGeos: Array<[string, THREE.BufferGeometry]> = [
+    ['bodyShell', bodyShell],
+    ['paintedRoof', roof.paintedRoof],
+    ['roofEdges', roof.roofEdges],
+    ['roofHeadliner', roof.roofHeadliner],
+    ['windshield', glass.windshield],
+    ['rearGlass', glass.rearGlass],
+    ['sideWindowL', glass.sideWindowL],
+    ['sideWindowR', glass.sideWindowR],
+    ['sideWindowsMerged', glass.sideWindowsMerged],
+    ['paintedPillars', pillars.paintedPillars],
+    ['darkPillarsAndTrim', pillars.darkPillarsAndTrim],
+    ['grilleDark', front.grilleDark],
+    ['grilleChromeAccent', front.grilleChromeAccent],
+    ['hlHousings', front.hlHousings],
+    ['hlEmissiveOptics', front.hlEmissiveOptics],
+    ['hlAmberMarkers', front.hlAmberMarkers],
+    ['hlClearLenses', front.hlClearLenses],
+    ['taillightEmissive', rear.taillightEmissive],
+    ['rearDarkValance', rear.rearDarkValance],
+    ['rearChromeAccent', rear.rearChromeAccent],
+    ['licensePlate', rear.licensePlate],
+    ['paintedMirrorsAndHandles', ext.paintedMirrorsAndHandles],
+    ['darkMirrorsAndUnderbody', ext.darkMirrorsAndUnderbody],
+    ['panelSeams', ext.panelSeams],
+    ['cabinTub', interior.cabinTub],
+    ['seats', interior.seats],
+    ['dashAndWheel', interior.dashAndWheel],
+    ['wheel.tireGeo', wheel.tireGeo],
+    ['wheel.rimAlloyGeo', wheel.rimAlloyGeo],
+    ['wheel.hubCapGeo', wheel.hubCapGeo],
+    ['wheel.rotorGeo', wheel.rotorGeo],
+  ];
+
+  for (const [name, geo] of allGeos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 0, `${name} must have vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have matching normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) &&
+          Number.isFinite(pos.getY(i)) &&
+          Number.isFinite(pos.getZ(i)),
+        `${name} has non-finite position at vertex ${i}`,
+      );
+      assert.ok(
+        Number.isFinite(norm.getX(i)) &&
+          Number.isFinite(norm.getY(i)) &&
+          Number.isFinite(norm.getZ(i)),
+        `${name} has non-finite normal at vertex ${i}`,
+      );
+    }
+  }
+
+  const meanNormal = (geo: THREE.BufferGeometry): THREE.Vector3 => {
+    const n = geo.getAttribute('normal');
+    const sum = new THREE.Vector3();
+    for (let i = 0; i < n.count; i++) {
+      sum.x += n.getX(i);
+      sum.y += n.getY(i);
+      sum.z += n.getZ(i);
+    }
+    return sum.divideScalar(n.count);
+  };
+
+  // Outward normal checks for roof and all glass surfaces
+  const roofN = meanNormal(roof.paintedRoof);
+  const wsN = meanNormal(glass.windshield);
+  const rgN = meanNormal(glass.rearGlass);
+  const swLN = meanNormal(glass.sideWindowL);
+  const swRN = meanNormal(glass.sideWindowR);
+
+  assert.ok(roofN.y > 0.85, `paintedRoof normal must point upward, got ${roofN.y}`);
+  assert.ok(wsN.y > 0.4 && wsN.z < -0.4, `windshield normal must point up & forward, got (${wsN.y}, ${wsN.z})`);
+  assert.ok(rgN.y > 0.4 && rgN.z > 0.4, `rearGlass normal must point up & rearward, got (${rgN.y}, ${rgN.z})`);
+  assert.ok(swLN.x < -0.5, `left side window normal must point -X, got ${swLN.x}`);
+  assert.ok(swRN.x > 0.5, `right side window normal must point +X, got ${swRN.x}`);
+
+  // Solid 3D roof slab perimeter skirts prevent back-face vanishing from low camera angles
+  roof.roofEdges.computeBoundingBox();
+  const roofEdgeBox = roof.roofEdges.boundingBox!;
+  assert.ok(
+    roofEdgeBox.max.y - roofEdgeBox.min.y >= 0.024,
+    `roof edge skirts must provide solid vertical thickness, got ${roofEdgeBox.max.y - roofEdgeBox.min.y}`,
+  );
+
+  // Flush-proud front headlights & rear taillights tucked cleanly within sedan width
+  front.hlEmissiveOptics.computeBoundingBox();
+  const hlBox = front.hlEmissiveOptics.boundingBox!;
+  assert.ok(hlBox.min.z <= -2.175, `headlight optics must sit flush-proud of nose skin, got min.z=${hlBox.min.z}`);
+  assert.ok(hlBox.max.x <= TRAFFIC_SEDAN_DIMS.width * 0.5, 'headlight optics must stay within sedan width');
+
+  rear.taillightEmissive.computeBoundingBox();
+  const tlBox = rear.taillightEmissive.boundingBox!;
+  assert.ok(tlBox.max.z >= 2.18, `taillights must sit flush-proud of rear tail skin, got max.z=${tlBox.max.z}`);
+  assert.ok(tlBox.max.x <= TRAFFIC_SEDAN_DIMS.width * 0.5, 'taillights must stay tucked within rear fender width');
+
+  // Rounded 0.34m touring tire geometry dimensions
+  wheel.tireGeo.computeBoundingBox();
+  const tireBox = wheel.tireGeo.boundingBox!;
+  assert.ok(
+    Math.abs((tireBox.max.y - tireBox.min.y) * 0.5 - TRAFFIC_SEDAN_DIMS.wheelRadius) < 0.008,
+    `tire radius must match 0.34m, got ${(tireBox.max.y - tireBox.min.y) * 0.5}`,
+  );
+  assert.ok(
+    Math.abs(tireBox.max.x - tireBox.min.x - TRAFFIC_SEDAN_DIMS.wheelWidth) < 0.008,
+    `tire width must match 0.23m, got ${tireBox.max.x - tireBox.min.x}`,
+  );
+
+  // Lightweight geometry budget for smooth 14+ car traffic rendering
+  const bodyVerts = bodyShell.getAttribute('position').count;
+  assert.ok(bodyVerts < 4500, `traffic sedan body shell should remain lightweight (<4500 verts), got ${bodyVerts}`);
+
+  for (const [, geo] of allGeos) geo.dispose();
+});
+
+test('Phase 2C-3A: Civilian traffic sedan VehicleRig preserves overrideColor variations, independent brake lights, shared GPU resources, TrafficSystem 14-car lifecycle, and non-regression', () => {
+  const dummyShadow = new THREE.Texture();
+  const trafficSpec = {
+    id: 'traffic_car',
+    name: 'City Cruiser',
+    subtitle: 'Traffic Vehicle',
+    kind: VehicleKind.Traffic,
+    color: 0x3b82f6,
+    accentColor: 0x1e293b,
+    maxSpeed: 15,
+    reverseSpeed: 6,
+    acceleration: 8,
+    braking: 16,
+    turnRate: 2.0,
+    grip: 7,
+    driftGrip: 3,
+    length: 4.35,
+    width: 1.94,
+    height: 1.38,
+    price: 0,
+  };
+
+  // Verify every coastal TRAFFIC_COLORS override applies cleanly with Traffic paint profile
+  const trafficProfile = getVehiclePaintMaterialProfile(VehicleKind.Traffic);
+  const colorRigs = TRAFFIC_COLORS.map((hex) => createVehicleMesh(trafficSpec, dummyShadow, hex));
+  assert.equal(colorRigs.length, TRAFFIC_COLORS.length);
+
+  for (let i = 0; i < TRAFFIC_COLORS.length; i++) {
+    const rig = colorRigs[i];
+    assert.equal(
+      rig.paintMat.color.getHex(),
+      TRAFFIC_COLORS[i],
+      `overrideColor 0x${TRAFFIC_COLORS[i].toString(16)} must apply cleanly`,
+    );
+    assert.equal(rig.paintMat.roughness, trafficProfile.roughness);
+    assert.equal(rig.paintMat.clearcoat, trafficProfile.clearcoat);
+    assert.equal(rig.wheels.length, 4);
+  }
+
+  const rigA = colorRigs[0];
+  const rigB = colorRigs[1];
+
+  // Shared GPU geometries AND shared static materials across simultaneous traffic cars
+  const paintedMeshA = rigA.bodyGroup.children[0] as THREE.Mesh;
+  const paintedMeshB = rigB.bodyGroup.children[0] as THREE.Mesh;
+  assert.equal(paintedMeshA.geometry, paintedMeshB.geometry, 'traffic sedans must reuse shared painted geometry');
+  assert.equal(rigA.glassMat, rigB.glassMat, 'traffic sedans should share static transparent glassMat');
+  assert.equal(rigA.headlightBeam.geometry, rigB.headlightBeam.geometry, 'traffic sedans should share headlight beam geometry');
+
+  const wheelTireA = (rigA.wheels[0].children[0].children[0] as THREE.Mesh);
+  const wheelTireB = (rigB.wheels[0].children[0].children[0] as THREE.Mesh);
+  assert.equal(wheelTireA.geometry, wheelTireB.geometry, 'traffic sedans must share wheel tire geometry');
+  assert.equal(wheelTireA.material, wheelTireB.material, 'traffic sedans must share static tire material');
+
+  // Per-instance paintMat and brakeLightMat must remain strictly independent
+  assert.notEqual(rigA.paintMat, rigB.paintMat, 'each traffic car needs an independent paintMat for color variation');
+  assert.notEqual(rigA.brakeLightMat, rigB.brakeLightMat, 'each traffic car needs an independent brakeLightMat for braking');
+  rigA.brakeLightMat.emissiveIntensity = 2.85;
+  rigB.brakeLightMat.emissiveIntensity = 0.4;
+  assert.equal(rigA.brakeLightMat.emissiveIntensity, 2.85);
+  assert.equal(rigB.brakeLightMat.emissiveIntensity, 0.4);
+
+  // Transparent automotive glass PBR contract
+  assert.ok(rigA.glassMat instanceof THREE.MeshPhysicalMaterial);
+  assert.equal(rigA.glassMat.transparent, true);
+  assert.ok(rigA.glassMat.ior >= 1.48 && rigA.glassMat.clearcoat >= 0.95 && rigA.glassMat.roughness <= 0.08);
+  assert.equal(rigA.glassMat.depthWrite, false);
+
+  // 3-tier distance LOD for lightweight distant traffic rendering
+  const lod = rigA.bodyGroup.children.find((c): c is THREE.LOD => c instanceof THREE.LOD);
+  assert.ok(lod, 'traffic sedan bodyGroup must include distance-based THREE.LOD');
+  assert.ok(lod.levels.length >= 3, 'traffic sedan LOD must include near, medium, and far tiers');
+  assert.ok(lod.levels[0].object.children.length >= 4, 'near LOD must render cabin, seats, license plate, and panel seams');
+  assert.ok(
+    lod.levels[1].object.children.length < lod.levels[0].object.children.length,
+    'medium LOD must reduce draw complexity relative to near LOD',
+  );
+
+  // Grounding & overall dimensions (~4.35m x 1.94m x 1.38m)
+  rigA.root.updateMatrixWorld(true);
+  const rigBox = new THREE.Box3().setFromObject(rigA.root);
+  const bodyBox = new THREE.Box3().setFromObject(rigA.bodyGroup);
+  assert.ok(rigBox.min.y >= -0.002, `traffic sedan must sit flush on ground y=0, got min.y=${rigBox.min.y}`);
+  assert.ok(bodyBox.min.y >= 0.18, `traffic sedan body must preserve commuter ground clearance, got ${bodyBox.min.y}`);
+  assert.ok(
+    Math.abs(rigBox.max.y - trafficSpec.height) < 0.04,
+    `traffic sedan roof height should match ~1.38m, got ${rigBox.max.y}`,
+  );
+
+  // Disposing one instance must NOT break remaining active traffic cars
+  rigB.dispose();
+  assert.ok(rigA.bodyGroup.children.length > 0 && rigA.glassMat.transparent === true);
+
+  // Real TrafficSystem integration: spawns all 14 sedans, advances traffic, spins 0.34m wheels, and disposes cleanly
+  const trafficSystem = new TrafficSystem(dummyShadow);
+  const obstaclesBefore = trafficSystem.getObstaclePositions();
+  assert.equal(obstaclesBefore.length, 14, 'TrafficSystem must continue spawning 14 civilian traffic sedans');
+  assert.equal(trafficSystem.root.children.length, 14, 'TrafficSystem root must hold all 14 traffic sedan rigs');
+  trafficSystem.update(0.05, 999, 999, 0.5, []);
+  const obstaclesAfter = trafficSystem.getObstaclePositions();
+  assert.ok(
+    obstaclesAfter.some(
+      (pos, idx) =>
+        Math.hypot(pos.x - obstaclesBefore[idx].x, pos.z - obstaclesBefore[idx].z) > 0.1,
+    ),
+    'moving traffic sedans must advance cleanly during TrafficSystem.update()',
+  );
+  trafficSystem.dispose();
+
+  // Non-regression: Veloce GT, Solstice Royale, Bayside Titan, and VCPD Interceptor remain untouched
+  const veloceRig = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const solsticeRig = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow);
+  const titanRig = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow);
+  const policeRig = createVehicleMesh(VEHICLE_CATALOG.vcpd_interceptor, dummyShadow);
+
+  assert.notEqual((veloceRig.bodyGroup.children[0] as THREE.Mesh).geometry, paintedMeshA.geometry);
+  assert.notEqual((solsticeRig.bodyGroup.children[0] as THREE.Mesh).geometry, paintedMeshA.geometry);
+  assert.notEqual((titanRig.bodyGroup.children[0] as THREE.Mesh).geometry, paintedMeshA.geometry);
+  assert.notEqual((policeRig.bodyGroup.children[0] as THREE.Mesh).geometry, paintedMeshA.geometry);
+  assert.ok(policeRig.policeRedMat && policeRig.policeBlueMat, 'VCPD Interceptor lightbar must remain intact');
+
+  for (let i = 0; i < colorRigs.length; i++) {
+    if (i !== 1) colorRigs[i].dispose();
+  }
+  veloceRig.dispose();
+  solsticeRig.dispose();
+  titanRig.dispose();
+  policeRig.dispose();
+  disposeSharedVehicleResources();
+  dummyShadow.dispose();
+});
+
+test('Phase 2C-3B: VCPD Interceptor geometry has distinct pursuit proportions, two-tone livery, push-bar, lightbar, patrol interior, 0.34m wheels, and valid normals', () => {
+  const nose = evaluateVcpdBodySection(-2.335);
+  const cowl = evaluateVcpdBodySection(-0.78);
+  const mid = evaluateVcpdBodySection(0.1);
+  const rearArch = evaluateVcpdBodySection(VCPD_INTERCEPTOR_DIMS.rearAxleZ);
+  const roofPeak = sampleVcpdRoofRail(0.32);
+
+  assert.ok(VCPD_INTERCEPTOR_DIMS.wheelRadius === 0.34, 'VCPD wheelRadius must match PoliceSystem 0.34m divisor');
+  assert.ok(VCPD_INTERCEPTOR_DIMS.length === 4.75);
+  assert.ok(VCPD_INTERCEPTOR_DIMS.width === 2.08);
+  assert.ok(mid.halfWidthMid > 0.96 && mid.halfWidthMid <= 1.04, 'broad pursuit body width within 2.08m catalog spec');
+  assert.ok(nose.beltY < cowl.beltY && cowl.cabinOpenHalfWidth === 0);
+  assert.ok(rearArch.inRearArch && rearArch.sillY > VCPD_INTERCEPTOR_DIMS.wheelRadius + 0.35);
+  assert.ok(roofPeak.crownY >= 1.43 && roofPeak.crownY <= 1.47, `pursuit roofline crown expected ~1.45-1.46m, got ${roofPeak.crownY}`);
+
+  const body = buildVcpdBodyShellGeometry();
+  const roof = buildVcpdRoofGeometry();
+  const glass = buildVcpdGlassGeometry();
+  const pillars = buildVcpdPillarsGeometry();
+  const front = buildVcpdFrontFasciaGeometry();
+  const lightbar = buildVcpdLightbarGeometry();
+  const rear = buildVcpdRearFasciaGeometry();
+  const ext = buildVcpdExteriorDetailsGeometry();
+  const interior = buildVcpdInteriorGeometry();
+  const wheel = buildVcpdWheelParts();
+
+  const allGeos: Array<[string, THREE.BufferGeometry]> = [
+    ['hullBodyShell', body.hullBodyShell],
+    ['whiteDoorPanels', body.whiteDoorPanels],
+    ['doorDecals', body.doorDecals],
+    ['whiteRoof', roof.whiteRoof],
+    ['roofEdges', roof.roofEdges],
+    ['roofHeadliner', roof.roofHeadliner],
+    ['windshield', glass.windshield],
+    ['rearGlass', glass.rearGlass],
+    ['sideWindowL', glass.sideWindowL],
+    ['sideWindowR', glass.sideWindowR],
+    ['sideWindowsMerged', glass.sideWindowsMerged],
+    ['paintedPillars', pillars.paintedPillars],
+    ['darkPillarsAndTrim', pillars.darkPillarsAndTrim],
+    ['grilleAndPushBarDark', front.grilleAndPushBarDark],
+    ['grilleChromeAccent', front.grilleChromeAccent],
+    ['hlHousings', front.hlHousings],
+    ['hlEmissiveOptics', front.hlEmissiveOptics],
+    ['hlAmberMarkers', front.hlAmberMarkers],
+    ['hlClearLenses', front.hlClearLenses],
+    ['barBaseAndHousing', lightbar.barBaseAndHousing],
+    ['redEmitters', lightbar.redEmitters],
+    ['blueEmitters', lightbar.blueEmitters],
+    ['clearOuterDome', lightbar.clearOuterDome],
+    ['whiteTakedowns', lightbar.whiteTakedowns],
+    ['taillightEmissive', rear.taillightEmissive],
+    ['rearDarkValance', rear.rearDarkValance],
+    ['rearChromeAccent', rear.rearChromeAccent],
+    ['licensePlate', rear.licensePlate],
+    ['paintedDetails', ext.paintedDetails],
+    ['whiteHandleDetails', ext.whiteHandleDetails],
+    ['darkTrimAndUnderbody', ext.darkTrimAndUnderbody],
+    ['chromeSpotlightAndAccents', ext.chromeSpotlightAndAccents],
+    ['spotlightLens', ext.spotlightLens],
+    ['panelSeams', ext.panelSeams],
+    ['cabinTub', interior.cabinTub],
+    ['seats', interior.seats],
+    ['dashAndWheel', interior.dashAndWheel],
+    ['prisonerPartition', interior.prisonerPartition],
+    ['mdcScreen', interior.mdcScreen],
+    ['wheel.tireGeo', wheel.tireGeo],
+    ['wheel.rimGeo', wheel.rimGeo],
+    ['wheel.chromeCenterCapGeo', wheel.chromeCenterCapGeo],
+    ['wheel.rotorGeo', wheel.rotorGeo],
+    ['wheel.caliperGeo', wheel.caliperGeo],
+  ];
+
+  for (const [name, geo] of allGeos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 0, `${name} must have vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have matching normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) &&
+          Number.isFinite(pos.getY(i)) &&
+          Number.isFinite(pos.getZ(i)),
+        `${name} has non-finite position at vertex ${i}`,
+      );
+      assert.ok(
+        Number.isFinite(norm.getX(i)) &&
+          Number.isFinite(norm.getY(i)) &&
+          Number.isFinite(norm.getZ(i)),
+        `${name} has non-finite normal at vertex ${i}`,
+      );
+    }
+  }
+
+  const meanNormal = (geo: THREE.BufferGeometry): THREE.Vector3 => {
+    const n = geo.getAttribute('normal');
+    const sum = new THREE.Vector3();
+    for (let i = 0; i < n.count; i++) {
+      sum.x += n.getX(i);
+      sum.y += n.getY(i);
+      sum.z += n.getZ(i);
+    }
+    return sum.divideScalar(n.count);
+  };
+
+  const roofN = meanNormal(roof.whiteRoof);
+  const headlinerN = meanNormal(roof.roofHeadliner);
+  const wsN = meanNormal(glass.windshield);
+  const rgN = meanNormal(glass.rearGlass);
+  const swLN = meanNormal(glass.sideWindowL);
+  const swRN = meanNormal(glass.sideWindowR);
+
+  assert.ok(roofN.y > 0.85, `whiteRoof normal must point upward, got ${roofN.y}`);
+  assert.ok(headlinerN.y < -0.85, `roofHeadliner normal must point downward, got ${headlinerN.y}`);
+  assert.ok(wsN.y > 0.4 && wsN.z < -0.4, `windshield normal must point up & forward, got (${wsN.y}, ${wsN.z})`);
+  assert.ok(rgN.y > 0.4 && rgN.z > 0.4, `rearGlass normal must point up & rearward, got (${rgN.y}, ${rgN.z})`);
+  assert.ok(swLN.x < -0.5, `left side window normal must point -X, got ${swLN.x}`);
+  assert.ok(swRN.x > 0.5, `right side window normal must point +X, got ${swRN.x}`);
+
+  // Heavy push-bar sits at front nose (-2.375m.. -2.418m), and roof lightbar sits above roof crown (> 1.46m)
+  front.grilleAndPushBarDark.computeBoundingBox();
+  const pushBarBox = front.grilleAndPushBarDark.boundingBox!;
+  assert.ok(pushBarBox.min.z <= -2.375, `front push-bar must extend cleanly in front of nose grille, got ${pushBarBox.min.z}`);
+
+  lightbar.redEmitters.computeBoundingBox();
+  lightbar.blueEmitters.computeBoundingBox();
+  const redBox = lightbar.redEmitters.boundingBox!;
+  const blueBox = lightbar.blueEmitters.boundingBox!;
+  assert.ok(redBox.max.x < 0 && blueBox.min.x > 0, 'roof lightbar red emitters occupy left (-X) wing and blue emitters occupy right (+X) wing');
+  assert.ok(redBox.max.y > 1.52 && blueBox.max.y > 1.52, 'roof lightbar sits visibly atop patrol roof crown');
+
+  // Wheel radius 0.34m x width 0.25m check
+  wheel.tireGeo.computeBoundingBox();
+  const tireBox = wheel.tireGeo.boundingBox!;
+  assert.ok(
+    Math.abs((tireBox.max.y - tireBox.min.y) * 0.5 - VCPD_INTERCEPTOR_DIMS.wheelRadius) < 0.008,
+    `tire radius must match 0.34m, got ${(tireBox.max.y - tireBox.min.y) * 0.5}`,
+  );
+  assert.ok(
+    Math.abs(tireBox.max.x - tireBox.min.x - VCPD_INTERCEPTOR_DIMS.wheelWidth) < 0.008,
+    `tire width must match 0.25m, got ${tireBox.max.x - tireBox.min.x}`,
+  );
+
+  for (const [, geo] of allGeos) geo.dispose();
+});
+
+test('Phase 2C-3B: VCPD Interceptor integrates cleanly with PoliceSystem, shared GPU buffers, independent lightbar flashing, LOD, and preserves all other vehicles', () => {
+  const dummyShadow = new THREE.Texture();
+  const spec = VEHICLE_CATALOG.vcpd_interceptor;
+
+  const unit1 = createVehicleMesh(spec, dummyShadow);
+  const unit2 = createVehicleMesh(spec, dummyShadow);
+
+  // Catalog color, VehicleKind.Police PBR profile, and rig contract
+  const policeProf = getVehiclePaintMaterialProfile(VehicleKind.Police);
+  assert.equal(unit1.paintMat.color.getHex(), spec.color);
+  assert.equal(unit1.paintMat.roughness, policeProf.roughness);
+  assert.equal(unit1.paintMat.clearcoat, policeProf.clearcoat);
+  assert.equal(unit1.wheels.length, 4);
+  assert.ok(unit1.policeRedMat instanceof THREE.MeshStandardMaterial);
+  assert.ok(unit1.policeBlueMat instanceof THREE.MeshStandardMaterial);
+
+  // Shared GPU geometries & static glass/tires across multiple interceptors
+  const hull1 = unit1.bodyGroup.children[0] as THREE.Mesh;
+  const hull2 = unit2.bodyGroup.children[0] as THREE.Mesh;
+  assert.equal(hull1.geometry, hull2.geometry, 'multiple VCPD Interceptors must share cached GPU hull geometry');
+  assert.equal(unit1.glassMat, unit2.glassMat, 'multiple VCPD Interceptors must share static transparent glassMat');
+  assert.equal(unit1.headlightBeam.geometry, unit2.headlightBeam.geometry);
+
+  const tire1 = unit1.wheels[0].children[0].children[0] as THREE.Mesh;
+  const tire2 = unit2.wheels[0].children[0].children[0] as THREE.Mesh;
+  assert.equal(tire1.geometry, tire2.geometry);
+  assert.equal(tire1.material, tire2.material);
+
+  // Per-instance mutable materials remain independent (flashing, braking, paint)
+  assert.ok(unit1.policeRedMat && unit2.policeRedMat);
+  assert.notEqual(unit1.policeRedMat, unit2.policeRedMat);
+  assert.notEqual(unit1.policeBlueMat, unit2.policeBlueMat);
+  assert.notEqual(unit1.brakeLightMat, unit2.brakeLightMat);
+  assert.notEqual(unit1.headlightMat, unit2.headlightMat);
+
+  unit1.policeRedMat.emissiveIntensity = 4.2;
+  unit2.policeRedMat.emissiveIntensity = 0.15;
+  assert.equal(unit1.policeRedMat.emissiveIntensity, 4.2);
+  assert.equal(unit2.policeRedMat.emissiveIntensity, 0.15);
+
+  // 3-tier distance LOD present
+  const lod = unit1.bodyGroup.children.find((c): c is THREE.LOD => c instanceof THREE.LOD);
+  assert.ok(lod && lod.levels.length >= 3, 'VCPD Interceptor must expose 3-tier distance LOD');
+  assert.ok(lod.levels[0].object.children.length >= 6, 'near LOD includes cabin, seats, prisoner partition, MDC screen, decals, plate, seams');
+
+  // Grounding & full body silhouette dimensions (~4.75m x 2.08m x ~1.56m incl. roof lightbar)
+  unit1.root.updateMatrixWorld(true);
+  const rigBox = new THREE.Box3().setFromObject(unit1.root);
+  const bodyBox = new THREE.Box3().setFromObject(unit1.bodyGroup);
+  const bodySize = bodyBox.getSize(new THREE.Vector3());
+  assert.ok(rigBox.min.y >= -0.002, `VCPD Interceptor must sit flush on ground y=0, got min.y=${rigBox.min.y}`);
+  assert.ok(bodyBox.min.y >= 0.19, `VCPD body must maintain realistic ground clearance, got ${bodyBox.min.y}`);
+  assert.ok(bodySize.z >= 4.70 && bodySize.z <= 4.86, `VCPD body length incl. push-bar/plate expected ~4.75-4.82m, got ${bodySize.z}`);
+  assert.ok(bodySize.x >= 2.02 && bodySize.x <= 2.18, `VCPD body width incl. mirrors/spotlight expected ~2.08-2.16m, got ${bodySize.x}`);
+
+  // Disposing one interceptor does not break remaining active units
+  unit2.dispose();
+  assert.ok(unit1.bodyGroup.children.length > 0 && unit1.glassMat.transparent === true);
+
+  // Real PoliceSystem integration: spawn wanted pursuit units, verify flashing lightbar + wheel spin + cleanup
+  const policeSystem = new PoliceSystem(dummyShadow);
+  assert.equal(policeSystem.root.children.length, 4, 'PoliceSystem pre-allocates 4 VCPD Interceptor rigs');
+  policeSystem.reportInfraction(100, 1);
+  assert.ok(policeSystem.wanted.stars >= 1);
+
+  for (let step = 0; step < 15; step++) {
+    policeSystem.update({
+      dt: 0.05,
+      playerX: 40,
+      playerZ: 40,
+      playerHeading: 0,
+      playerSpeed: 14,
+      nightFactor: 0.9,
+      colliders: [],
+    });
+    const visibleUnit = policeSystem.root.children.find((c) => c.visible);
+    assert.ok(visibleUnit, 'active pursuit VCPD Interceptor must become visible during wanted chase');
+  }
+  assert.ok(policeSystem.getActiveBlips().length >= 1);
+  // Step enough frames for alternating red/blue phase flip
+  let sawRedPeak = false;
+  let sawBluePeak = false;
+  for (let step = 0; step < 25; step++) {
+    policeSystem.update({
+      dt: 0.05,
+      playerX: 40,
+      playerZ: 40,
+      playerHeading: 0,
+      playerSpeed: 14,
+      nightFactor: 0.9,
+      colliders: [],
+    });
+    const u0 = (policeSystem as unknown as { units: Array<{ active: boolean; rig: VehicleRig }> }).units.find((u) => u.active);
+    if (u0?.rig.policeRedMat && u0?.rig.policeBlueMat) {
+      if (u0.rig.policeRedMat.emissiveIntensity > 3.0 && u0.rig.policeBlueMat.emissiveIntensity < 0.5) sawRedPeak = true;
+      if (u0.rig.policeBlueMat.emissiveIntensity > 3.0 && u0.rig.policeRedMat.emissiveIntensity < 0.5) sawBluePeak = true;
+      assert.ok(Math.abs(u0.rig.wheels[0].rotation.x) > 0.01, 'PoliceSystem must spin VCPD wheels cleanly');
+    }
+  }
+  assert.ok(sawRedPeak && sawBluePeak, 'PoliceSystem must alternate VCPD red & blue lightbar emitters');
+  policeSystem.dispose();
+
+  // Distinctness & non-regression across ALL 5 custom vehicles
+  const veloceRig = createVehicleMesh(VEHICLE_CATALOG.veloce_gt, dummyShadow);
+  const solsticeRig = createVehicleMesh(VEHICLE_CATALOG.solstice_royale, dummyShadow);
+  const titanRig = createVehicleMesh(VEHICLE_CATALOG.bayside_titan, dummyShadow);
+  const trafficRig = createVehicleMesh(
+    {
+      ...spec,
+      id: 'traffic_car',
+      name: 'City Cruiser',
+      kind: VehicleKind.Traffic,
+      length: 4.35,
+      width: 1.94,
+      height: 1.38,
+    },
+    dummyShadow,
+  );
+
+  assert.notEqual((veloceRig.bodyGroup.children[0] as THREE.Mesh).geometry, hull1.geometry);
+  assert.notEqual((solsticeRig.bodyGroup.children[0] as THREE.Mesh).geometry, hull1.geometry);
+  assert.notEqual((titanRig.bodyGroup.children[0] as THREE.Mesh).geometry, hull1.geometry);
+  assert.notEqual((trafficRig.bodyGroup.children[0] as THREE.Mesh).geometry, hull1.geometry);
+
+  unit1.dispose();
+  veloceRig.dispose();
+  solsticeRig.dispose();
+  titanRig.dispose();
+  trafficRig.dispose();
+  disposeSharedVehicleResources();
+  dummyShadow.dispose();
+});
+
+
+
+
 
 
 
