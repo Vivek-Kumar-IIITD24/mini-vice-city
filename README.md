@@ -2,6 +2,8 @@
 
 **Your City. Your Story. Your Freedom.**
 
+> **[▶ Play MINI VICE CITY Online](https://mini-vice-city.vivek24627.workers.dev/)**
+
 A browser-based 3D open-world urban exploration and driving game set in a sunlit coastal metropolis, built with procedural Three.js WebGL architecture, React, TypeScript, and Web Audio synthesis.
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)
