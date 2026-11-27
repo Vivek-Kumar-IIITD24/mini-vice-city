@@ -10,6 +10,10 @@ import {
   createWetRoadSurface,
   WetRoadSurface,
 } from './wetRoadSync';
+import {
+  buildDowntownArchitecture,
+  DowntownArchitectureStats,
+} from './downtownArchitecture';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -48,6 +52,7 @@ export interface BuiltCityWorld {
   oceanMaterial: THREE.MeshStandardMaterial;
   trafficSignals: TrafficSignalVisual[];
   environmentMeshesForCamera: THREE.Object3D[];
+  downtownArchitectureStats: DowntownArchitectureStats;
   dispose: () => void;
 }
 
@@ -797,9 +802,24 @@ export function buildCityWorld(
     root.add(group);
   };
 
+  const downtownTowerSpecs: BuildingSpec[] = [];
   for (const b of layout.buildings) {
-    buildArchitecturalStructure(b);
+    if (b.style === 'skyscraper' || b.style === 'landmark') {
+      downtownTowerSpecs.push(b);
+    } else {
+      buildArchitecturalStructure(b);
+    }
   }
+
+  const downtownArchitectureStats = buildDowntownArchitecture(downtownTowerSpecs, {
+    root,
+    textures,
+    lobbyGlassMat,
+    emissiveBuildingMaterials,
+    neonTrimMaterials,
+    environmentMeshesForCamera,
+    disposables,
+  });
 
   // -------------------------------------------------------
   // 5. INDUSTRIAL HARBOUR CONTAINERS & GANTRY CRANES
@@ -1112,6 +1132,7 @@ export function buildCityWorld(
     oceanMaterial,
     trafficSignals,
     environmentMeshesForCamera,
+    downtownArchitectureStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

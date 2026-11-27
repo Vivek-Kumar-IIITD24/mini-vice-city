@@ -1174,6 +1174,7 @@ export class GameEngine {
     if (res.missionFailedTimeout) {
       this.pushNotification('TIME EXPIRED', `${def.title} failed — Restart from Pause menu`, 'rose');
       this.missionProgress = createMissionProgress(null, this.activeVehicle !== null, 0);
+      this.persistNow();
       this.markers.setCheckpoint(0, 0, false);
       this.emitHudSnapshot();
       return;

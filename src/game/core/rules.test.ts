@@ -134,10 +134,16 @@ import {
 import { PedestrianSystem } from '../pedestrians/pedestrianSystem';
 import {
   createMissionProgress,
+  getMissionById,
   stepMissionProgress,
 } from '../missions/missionData';
 import { TimeAndWeatherSystem } from '../time/timeAndWeather';
 import { buildCityWorld } from '../world/cityBuilder';
+import {
+  createArtDecoFinGeometry,
+  createSlopedCrownGeometry,
+  resolveDowntownTowerProfile,
+} from '../world/downtownArchitecture';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -328,6 +334,98 @@ test('story mission THE FIRST RIDE advances from finding vehicle through all che
   }
   assert.equal(step.missionCompleted, true);
   assert.equal(progress.stage, 'completed');
+});
+
+test('timed mission starts with configured limit, flags timeout when exceeded, clamps remaining time to 0, and never marks completed', () => {
+  const def = getMissionById('ocean_drive_sprint');
+  assert.ok(def && typeof def.timeLimitSec === 'number');
+
+  const initial = createMissionProgress(def.id, true, 0);
+  assert.equal(initial.missionId, def.id);
+  assert.equal(initial.stage, 'checkpoints');
+  assert.equal(initial.remainingSec, def.timeLimitSec);
+
+  // Advance part-way through the timer away from checkpoint 0
+  const mid = stepMissionProgress(initial, 0, 0, true, 25);
+  assert.equal(mid.missionFailedTimeout, false);
+  assert.equal(mid.missionCompleted, false);
+  assert.equal(mid.state.remainingSec, def.timeLimitSec - 25);
+
+  // Overshoot remaining time even if positioned directly on the checkpoint
+  const cp0 = def.checkpoints[0];
+  const expired = stepMissionProgress(mid.state, cp0.x, cp0.z, true, def.timeLimitSec);
+  assert.equal(expired.missionFailedTimeout, true);
+  assert.equal(expired.state.remainingSec, 0);
+  assert.equal(expired.missionCompleted, false);
+  assert.equal(expired.checkpointReached, false);
+  assert.notEqual(expired.state.stage, 'completed');
+});
+
+test('clearing active mission metadata on timeout persists activeMissionId null and checkpoint 0 while preserving player save data', () => {
+  const memory = new Map<string, string>();
+  const mockStore = {
+    getItem: (k: string) => memory.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      memory.set(k, v);
+    },
+  };
+
+  const def = getMissionById('harbour_express');
+  assert.ok(def && typeof def.timeLimitSec === 'number');
+
+  // Seed a save with active timed mission mid-way through checkpoints and existing player progression
+  const save = createDefaultSaveData();
+  save.money = 6750;
+  save.unlockedVehicleIds = ['veloce_gt', 'solstice_royale'];
+  save.completedMissionIds = ['the_first_ride'];
+  save.discoveredDistricts = [DistrictId.OceanDrive, DistrictId.Downtown, DistrictId.Harbour];
+  save.stats.distanceDrivenKm = 18.4;
+  save.stats.missionsCompleted = 1;
+  save.stats.maxWantedEscaped = 3;
+  save.settings.weather = WeatherType.Rain;
+  save.activeMissionId = def.id;
+  save.activeCheckpointIndex = 2;
+  assert.equal(persistSaveData(save, mockStore), true);
+
+  // Verify the active mission was initially persisted before timeout
+  const beforeTimeout = loadSaveData(mockStore);
+  assert.ok(beforeTimeout);
+  assert.equal(beforeTimeout.activeMissionId, def.id);
+  assert.equal(beforeTimeout.activeCheckpointIndex, 2);
+
+  // Simulate mission timeout and immediate free-roam reset + persist
+  const activeProgress = createMissionProgress(def.id, true, 2);
+  const timeoutStep = stepMissionProgress(activeProgress, 0, 0, true, def.timeLimitSec + 5);
+  assert.equal(timeoutStep.missionFailedTimeout, true);
+  assert.equal(timeoutStep.state.remainingSec, 0);
+  assert.equal(timeoutStep.missionCompleted, false);
+
+  const clearedProgress = createMissionProgress(null, true, 0);
+  assert.equal(clearedProgress.missionId, null);
+  assert.equal(clearedProgress.stage, 'idle');
+  assert.equal(clearedProgress.checkpointIndex, 0);
+
+  save.activeMissionId = clearedProgress.missionId;
+  save.activeCheckpointIndex = clearedProgress.checkpointIndex;
+  assert.equal(persistSaveData(save, mockStore), true);
+
+  // Reloading after timeout restores free-roam mission metadata and preserves all other progression/settings
+  const reloaded = loadSaveData(mockStore);
+  assert.ok(reloaded);
+  assert.equal(reloaded.activeMissionId, null);
+  assert.equal(reloaded.activeCheckpointIndex, 0);
+  assert.equal(reloaded.money, 6750);
+  assert.deepEqual(reloaded.unlockedVehicleIds, ['veloce_gt', 'solstice_royale']);
+  assert.deepEqual(reloaded.completedMissionIds, ['the_first_ride']);
+  assert.deepEqual(reloaded.discoveredDistricts, [
+    DistrictId.OceanDrive,
+    DistrictId.Downtown,
+    DistrictId.Harbour,
+  ]);
+  assert.equal(reloaded.stats.distanceDrivenKm, 18.4);
+  assert.equal(reloaded.stats.missionsCompleted, 1);
+  assert.equal(reloaded.stats.maxWantedEscaped, 3);
+  assert.equal(reloaded.settings.weather, WeatherType.Rain);
 });
 
 test('save system persists, reloads, and gracefully rejects corrupted JSON', () => {
@@ -3159,6 +3257,128 @@ test('Phase 2C-3B: VCPD Interceptor integrates cleanly with PoliceSystem, shared
   disposeSharedVehicleResources();
   dummyShadow.dispose();
 });
+
+test('Phase 2D-1: Downtown custom crown and Art Deco fin geometries have finite vertices, valid normals, and normalized bounds', () => {
+  const crownGeo = createSlopedCrownGeometry();
+  const finGeo = createArtDecoFinGeometry();
+
+  for (const [label, geo] of [
+    ['slopedCrown', crownGeo],
+    ['artDecoFin', finGeo],
+  ] as const) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 12, `${label} must have valid vertex count`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have normals matching vertices`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) &&
+          Number.isFinite(pos.getY(i)) &&
+          Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} must be finite`,
+      );
+      const nLen = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(nLen > 0.9 && nLen < 1.1, `${label} normal ${i} must be unit length`);
+    }
+    assert.ok(geo.boundingBox && geo.boundingSphere, `${label} must compute bounds`);
+    assert.ok(geo.boundingBox.min.y >= -0.05 && geo.boundingBox.max.y <= 1.08);
+  }
+
+  crownGeo.dispose();
+  finGeo.dispose();
+});
+
+test('Phase 2D-1: Downtown skyscrapers and Vice Tower use distinct silhouettes, InstancedMesh facade batches, safe PBR day/night lighting, and clean disposal', () => {
+  const layout = generateCityLayout();
+  const downtownTowers = layout.buildings.filter(
+    (b) => b.style === 'skyscraper' || b.style === 'landmark',
+  );
+  assert.equal(downtownTowers.length, 7, 'Downtown should have 6 skyscrapers + 1 Vice Tower landmark');
+
+  // Every Downtown tower resolves to a distinct architectural archetype and crown kind
+  const profiles = downtownTowers.map((b) => resolveDowntownTowerProfile(b));
+  assert.equal(new Set(profiles.map((p) => p.archetype)).size, 7);
+  assert.equal(new Set(profiles.map((p) => p.crownKind)).size, 7);
+
+  const viceSpec = downtownTowers.find((b) => b.id === 'vice_tower_landmark')!;
+  const viceProfile = resolveDowntownTowerProfile(viceSpec);
+  assert.equal(viceProfile.archetype, 'vice_tower_art_deco');
+  assert.equal(viceProfile.crownKind, 'art_deco_spire');
+  assert.equal(viceSpec.x, 0);
+  assert.equal(viceSpec.z, -66);
+  assert.equal(viceSpec.height, 66);
+
+  // Build full city world and inspect Phase 2D-1 Downtown integration
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const stats = world.downtownArchitectureStats;
+
+  assert.equal(stats.skyscraperCount, 6);
+  assert.equal(stats.landmarkCount, 1);
+  assert.equal(stats.towerMaterialCount, 7);
+  assert.ok(stats.sharedMaterialCount <= 12, 'shared Downtown materials should stay compact');
+  assert.ok(stats.instancedBatches >= 7, 'repeated mullions/spandrels/columns/fins should use InstancedMesh batches');
+  assert.ok(stats.totalFacadeInstances >= 300, `expected rich instanced facade detail, got ${stats.totalFacadeInstances}`);
+  assert.ok(
+    stats.viceTowerPinnacleHeight > 85,
+    `Vice Tower pinnacle with Art Deco crown and spire should soar above 85m, got ${stats.viceTowerPinnacleHeight}`,
+  );
+
+  // Verify Vice Tower group exists at exact coordinates with multi-part Art Deco architecture
+  const viceGroup = world.root.getObjectByName('downtown_vice_tower_landmark') as THREE.Group | undefined;
+  assert.ok(viceGroup, 'Vice Tower group must be mounted in city world');
+  assert.equal(viceGroup.position.x, 0);
+  assert.equal(viceGroup.position.z, -66);
+  assert.ok(viceGroup.children.length >= 25, 'Vice Tower should be a rich composite Art Deco landmark');
+
+  // Verify all Downtown InstancedMesh batches have valid finite matrices and bounding spheres
+  const downtownInstMeshes = world.root.children.filter(
+    (c): c is THREE.InstancedMesh =>
+      c instanceof THREE.InstancedMesh && c.name.startsWith('downtown_'),
+  );
+  assert.equal(downtownInstMeshes.length, stats.instancedBatches);
+  const tmpMat = new THREE.Matrix4();
+  for (const inst of downtownInstMeshes) {
+    assert.ok(inst.count > 0);
+    assert.ok(
+      inst.boundingSphere && Number.isFinite(inst.boundingSphere.radius) && inst.boundingSphere.radius > 0,
+      `${inst.name} must have a valid bounding sphere`,
+    );
+    inst.getMatrixAt(0, tmpMat);
+    assert.ok(tmpMat.elements.every((v) => Number.isFinite(v)), `${inst.name} matrices must be finite`);
+  }
+
+  // Verify daytime vs night lighting modulation keeps daytime windows/accents below selective HDR bloom threshold
+  const weather = new TimeAndWeatherSystem(scene, false);
+  weather.setTimePreset(TimePreset.Afternoon);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, 0, -38, world, 0, 0);
+  const skyMats = world.emissiveBuildingMaterials.filter(
+    (m) => m.roughnessMap === mockTextures.skyscraperRoughness,
+  );
+  assert.equal(skyMats.length, 7, 'all 7 Downtown towers must register PBR glass curtain-wall materials');
+  for (const m of skyMats) {
+    assert.ok(m.emissiveIntensity < 0.3, `daytime tower window glow should stay restrained, got ${m.emissiveIntensity}`);
+  }
+  for (const m of world.neonTrimMaterials) {
+    assert.ok(m.emissiveIntensity < 0.9, `daytime architectural accents should stay below bloom threshold, got ${m.emissiveIntensity}`);
+  }
+
+  // At Neon Nightlife, tower windows & Vice Tower architectural accents illuminate cleanly
+  weather.setTimePreset(TimePreset.Night);
+  weather.update(0.05, 0, -38, world, 0, 0);
+  for (const m of skyMats) {
+    assert.ok(m.emissiveIntensity > 1.2, `night tower windows should illuminate, got ${m.emissiveIntensity}`);
+  }
+  for (const m of world.neonTrimMaterials) {
+    assert.ok(m.emissiveIntensity > 2.0, `night architectural accents should glow, got ${m.emissiveIntensity}`);
+  }
+
+  weather.dispose();
+  world.dispose();
+});
+
 
 
 
