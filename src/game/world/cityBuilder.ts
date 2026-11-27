@@ -14,6 +14,10 @@ import {
   buildDowntownArchitecture,
   DowntownArchitectureStats,
 } from './downtownArchitecture';
+import {
+  buildOceanDriveArchitecture,
+  OceanDriveArchitectureStats,
+} from './oceanDriveArchitecture';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -53,6 +57,7 @@ export interface BuiltCityWorld {
   trafficSignals: TrafficSignalVisual[];
   environmentMeshesForCamera: THREE.Object3D[];
   downtownArchitectureStats: DowntownArchitectureStats;
+  oceanDriveArchitectureStats: OceanDriveArchitectureStats;
   dispose: () => void;
 }
 
@@ -803,9 +808,12 @@ export function buildCityWorld(
   };
 
   const downtownTowerSpecs: BuildingSpec[] = [];
+  const oceanDriveHotelSpecs: BuildingSpec[] = [];
   for (const b of layout.buildings) {
     if (b.style === 'skyscraper' || b.style === 'landmark') {
       downtownTowerSpecs.push(b);
+    } else if (b.style === 'hotel') {
+      oceanDriveHotelSpecs.push(b);
     } else {
       buildArchitecturalStructure(b);
     }
@@ -815,6 +823,15 @@ export function buildCityWorld(
     root,
     textures,
     lobbyGlassMat,
+    emissiveBuildingMaterials,
+    neonTrimMaterials,
+    environmentMeshesForCamera,
+    disposables,
+  });
+
+  const oceanDriveArchitectureStats = buildOceanDriveArchitecture(oceanDriveHotelSpecs, {
+    root,
+    textures,
     emissiveBuildingMaterials,
     neonTrimMaterials,
     environmentMeshesForCamera,
@@ -1133,6 +1150,7 @@ export function buildCityWorld(
     trafficSignals,
     environmentMeshesForCamera,
     downtownArchitectureStats,
+    oceanDriveArchitectureStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

@@ -144,6 +144,13 @@ import {
   createSlopedCrownGeometry,
   resolveDowntownTowerProfile,
 } from '../world/downtownArchitecture';
+import {
+  createArtDecoPedimentGeometry,
+  createChamferedBlockGeometry,
+  createCurvedBalconySlabGeometry,
+  createRoundedCornerGeometry,
+  resolveOceanDriveHotelProfile,
+} from '../world/oceanDriveArchitecture';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -3378,6 +3385,195 @@ test('Phase 2D-1: Downtown skyscrapers and Vice Tower use distinct silhouettes, 
   weather.dispose();
   world.dispose();
 });
+
+test('Phase 2D-2: Ocean Drive custom Art Deco geometries have finite vertices, valid outward normals, and normalized bounds', () => {
+  const roundedCorner = createRoundedCornerGeometry();
+  const decoPediment = createArtDecoPedimentGeometry();
+  const curvedBalcony = createCurvedBalconySlabGeometry();
+  const chamferedBlock = createChamferedBlockGeometry();
+
+  for (const [label, geo] of [
+    ['roundedCorner', roundedCorner],
+    ['decoPediment', decoPediment],
+    ['curvedBalcony', curvedBalcony],
+    ['chamferedBlock', chamferedBlock],
+  ] as const) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count > 24, `${label} must have genuine sculpted vertex detail`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have vertex normals matching positions`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) &&
+          Number.isFinite(pos.getY(i)) &&
+          Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} must be finite`,
+      );
+      const nLen = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(nLen > 0.9 && nLen < 1.1, `${label} normal ${i} must be unit length, got ${nLen}`);
+    }
+    assert.ok(geo.boundingBox && geo.boundingSphere, `${label} must compute bounds`);
+    assert.ok(
+      geo.boundingBox.min.y >= -0.06 && geo.boundingBox.max.y <= 1.06,
+      `${label} Y bounds must be normalized [0..1], got [${geo.boundingBox.min.y}, ${geo.boundingBox.max.y}]`,
+    );
+  }
+
+  // Verify rounded corner curved arc faces outward (+X/+Z quadrant)
+  const rcPos = roundedCorner.getAttribute('position');
+  const rcNorm = roundedCorner.getAttribute('normal');
+  let outwardArcSamples = 0;
+  for (let i = 0; i < rcPos.count; i++) {
+    const x = rcPos.getX(i);
+    const z = rcPos.getZ(i);
+    const nx = rcNorm.getX(i);
+    const nz = rcNorm.getZ(i);
+    if (x > 0.15 && z > 0.15 && Math.abs(rcNorm.getY(i)) < 0.25) {
+      assert.ok(nx * x + nz * z > 0, 'roundedCorner outer arc normals must point outward');
+      outwardArcSamples++;
+    }
+  }
+  assert.ok(outwardArcSamples > 12, 'roundedCorner should have curved outer arc faces');
+
+  // Verify curved balcony anchors cleanly at wall plane Z=0 and extends outward to Z=+1
+  assert.ok(Math.abs(curvedBalcony.boundingBox!.min.z) < 0.01);
+  assert.ok(Math.abs(curvedBalcony.boundingBox!.max.z - 1) < 0.01);
+
+  roundedCorner.dispose();
+  decoPediment.dispose();
+  curvedBalcony.dispose();
+  chamferedBlock.dispose();
+});
+
+test('Phase 2D-2: Ocean Drive hotels receive distinct archetypes, aligned balconies, grounded varied rooftops, InstancedMesh batching, day/night PBR calibration, disposal, and preserve Phase 2D-1', () => {
+  const layout = generateCityLayout();
+  const hotelSpecs = layout.buildings.filter((b) => b.style === 'hotel');
+  assert.equal(hotelSpecs.length, 11, 'Ocean Drive should contain all 11 hotel-style buildings');
+
+  // 1. Distinct architectural configurations across hotels
+  const profiles = hotelSpecs.map((h) => resolveOceanDriveHotelProfile(h));
+  const uniqueArchetypes = new Set(profiles.map((p) => p.archetype));
+  const uniqueBalconyPatterns = new Set(profiles.map((p) => p.balconyPattern));
+  const uniqueRooftops = new Set(profiles.map((p) => p.rooftopKind));
+  const uniqueCornerStyles = new Set(profiles.map((p) => p.cornerStyle));
+  assert.ok(uniqueArchetypes.size >= 6, `expected >= 6 distinct hotel archetypes, got ${uniqueArchetypes.size}`);
+  assert.ok(uniqueBalconyPatterns.size >= 6, 'expected varied balcony arrangements across archetypes');
+  assert.ok(uniqueRooftops.size >= 4, 'expected varied rooftop designs across Ocean Drive');
+  assert.equal(uniqueCornerStyles.size, 3, 'expected rounded, chamfered, and fluted pilaster corners');
+
+  // Rooftop pools should appear only on suitable select hotels (not every hotel)
+  const poolProfiles = profiles.filter((p) => p.hasRooftopPool);
+  assert.ok(
+    poolProfiles.length >= 3 && poolProfiles.length <= 5,
+    `rooftop pools should be selective rather than on every hotel, got ${poolProfiles.length}/${hotelSpecs.length}`,
+  );
+
+  // Build full city world and inspect Ocean Drive integration
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const odStats = world.oceanDriveArchitectureStats;
+  const dtStats = world.downtownArchitectureStats;
+
+  // 2. Verify Ocean Drive stats & non-regression of Phase 2D-1 Downtown stats
+  assert.equal(odStats.hotelCount, 11);
+  assert.equal(odStats.rooftopPoolCount, poolProfiles.length);
+  assert.equal(odStats.hotelMaterialCount, 11);
+  assert.ok(odStats.sharedMaterialCount <= 18, `shared Ocean Drive material pool should stay compact, got ${odStats.sharedMaterialCount}`);
+  assert.ok(odStats.totalBalconyUnits >= 60, `expected rich hotel balconies across Ocean Drive, got ${odStats.totalBalconyUnits}`);
+  assert.ok(odStats.instancedBatches >= 10, `expected batched InstancedMesh hotel details, got ${odStats.instancedBatches}`);
+  assert.ok(odStats.totalFacadeInstances >= 1200, `expected detailed instanced balconies/railings/trim, got ${odStats.totalFacadeInstances}`);
+
+  // Phase 2D-1 Downtown skyscrapers & Vice Tower must remain completely preserved
+  assert.equal(dtStats.skyscraperCount, 6);
+  assert.equal(dtStats.landmarkCount, 1);
+  assert.ok(dtStats.viceTowerPinnacleHeight > 85);
+  assert.ok(world.root.getObjectByName('downtown_vice_tower_landmark'));
+
+  // 3. Verify every hotel group sits at exact layout coordinates with grounded rooftops & pools
+  for (const spec of hotelSpecs) {
+    const group = world.root.getObjectByName(`ocean_drive_${spec.id}`) as THREE.Group | undefined;
+    assert.ok(group, `hotel group ocean_drive_${spec.id} must be mounted`);
+    assert.equal(group.position.x, spec.x);
+    assert.equal(group.position.z, spec.z);
+    assert.ok(group.children.length >= 4, `hotel ${spec.id} must be composite multi-part architecture`);
+
+    const summary = odStats.hotels.find((h) => h.id === spec.id)!;
+    assert.ok(summary.balconyCount >= 4, `hotel ${spec.id} must have balconies`);
+    assert.ok(summary.pinnacleY > spec.height + 0.5, `hotel ${spec.id} rooftop structures must sit above roof height`);
+
+    const poolMesh = group.getObjectByName(`rooftop_pool_${spec.id}`) as THREE.Mesh | undefined;
+    if (summary.hasRooftopPool) {
+      assert.ok(poolMesh, `hotel ${spec.id} with rooftop pool must include grounded pool water mesh`);
+      assert.ok(
+        poolMesh.position.y >= spec.height + 0.5 && poolMesh.position.y <= spec.height + 1.2,
+        `pool on ${spec.id} must sit grounded on roof coping (y=${poolMesh.position.y}, roof=${spec.height})`,
+      );
+    } else {
+      assert.equal(poolMesh, undefined, `hotel ${spec.id} without pool must not build a rooftop pool`);
+    }
+  }
+
+  // 4. Verify all Ocean Drive InstancedMesh batches have finite matrices, valid bounding spheres,
+  // and stay clear of Ocean Drive roadway (x >= 89)
+  const odInstMeshes = world.root.children.filter(
+    (c): c is THREE.InstancedMesh =>
+      c instanceof THREE.InstancedMesh && c.name.startsWith('ocean_drive_'),
+  );
+  assert.equal(odInstMeshes.length, odStats.instancedBatches);
+
+  const tmpMat = new THREE.Matrix4();
+  const tmpPos = new THREE.Vector3();
+  const roadEdgeOceanDrive = 96 - 14 / 2; // x = 89.0
+  for (const inst of odInstMeshes) {
+    assert.ok(inst.count > 0);
+    assert.ok(
+      inst.boundingSphere && Number.isFinite(inst.boundingSphere.radius) && inst.boundingSphere.radius > 0,
+      `${inst.name} must have a valid bounding sphere`,
+    );
+    for (let i = 0; i < inst.count; i++) {
+      inst.getMatrixAt(i, tmpMat);
+      assert.ok(tmpMat.elements.every((v) => Number.isFinite(v)), `${inst.name}[${i}] matrix must be finite`);
+      tmpPos.setFromMatrixPosition(tmpMat);
+      assert.ok(tmpPos.y >= 0, `${inst.name}[${i}] must not sink below ground y=0`);
+      assert.ok(
+        tmpPos.x < roadEdgeOceanDrive - 2.0,
+        `${inst.name}[${i}] must stay well clear of Ocean Drive road (x=${tmpPos.x})`,
+      );
+    }
+  }
+
+  // 5. Verify day vs night PBR lighting modulation (stucco windows stay subtle by day, glow warmly at night)
+  const weather = new TimeAndWeatherSystem(scene, false);
+  weather.setTimePreset(TimePreset.Afternoon);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, 86, 52, world, 0, 0);
+
+  const hotelFacadeMats = world.emissiveBuildingMaterials.filter(
+    (m) => m.roughnessMap === mockTextures.hotelRoughness,
+  );
+  assert.ok(hotelFacadeMats.length >= 11, 'all 11 Ocean Drive hotels must register PBR stucco/window materials');
+  for (const m of hotelFacadeMats) {
+    assert.ok(m.emissiveIntensity < 0.25, `daytime hotel window glow must stay subtle, got ${m.emissiveIntensity}`);
+  }
+  for (const m of world.neonTrimMaterials) {
+    assert.ok(m.emissiveIntensity < 0.9, `daytime hotel neon trims must stay below bloom threshold, got ${m.emissiveIntensity}`);
+  }
+
+  weather.setTimePreset(TimePreset.Night);
+  weather.update(0.05, 86, 52, world, 0, 0);
+  for (const m of hotelFacadeMats) {
+    assert.ok(m.emissiveIntensity > 1.2, `night hotel windows should illuminate warmly, got ${m.emissiveIntensity}`);
+  }
+  for (const m of world.neonTrimMaterials) {
+    assert.ok(m.emissiveIntensity > 2.0, `night Ocean Drive neon trims should glow, got ${m.emissiveIntensity}`);
+  }
+
+  // 6. Clean resource disposal
+  weather.dispose();
+  world.dispose();
+});
+
 
 
 
