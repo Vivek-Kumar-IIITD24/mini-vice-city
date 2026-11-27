@@ -98,6 +98,37 @@ function detectSoftwareWebGL(): boolean {
   }
 }
 
+function isRenderDebugEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get('renderdebug') === '1';
+  } catch {
+    return false;
+  }
+}
+
+export interface ViceRenderDebugSnapshot {
+  frameCount: number;
+  gameState: GameState;
+  graphicsQuality: GraphicsQuality;
+  isSoftwareGl: boolean;
+  timeHours: number;
+  weather: string;
+  contextLost: boolean;
+  contextLostCount: number;
+  contextRestoredCount: number;
+  pmrem: ReturnType<DynamicEnvironmentSystem['getStats']>;
+  post: ReturnType<CinematicPostPipeline['getDiagnostics']>;
+}
+
+declare global {
+  interface Window {
+    __VICE_RENDER_DEBUG__?: {
+      getSnapshot: () => ViceRenderDebugSnapshot;
+    };
+  }
+}
+
 export class GameEngine {
   private readonly mountEl: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
@@ -142,13 +173,21 @@ export class GameEngine {
   private saveAccum = 0;
   private fpsSmooth = 60;
   private disposed = false;
+  private isWebGLContextLost = false;
+  private contextLostCount = 0;
+  private contextRestoredCount = 0;
+  private renderedFrameCount = 0;
+  private readonly renderDebugEnabled: boolean;
 
   private readonly onHudUpdate: (snapshot: HudSnapshot) => void;
   private readonly boundResize: () => void;
+  private readonly boundContextLost: (e: Event) => void;
+  private readonly boundContextRestored: () => void;
 
   constructor(mountEl: HTMLElement, onHudUpdate: (snapshot: HudSnapshot) => void) {
     this.mountEl = mountEl;
     this.onHudUpdate = onHudUpdate;
+    this.renderDebugEnabled = isRenderDebugEnabled();
 
     // Load or initialize local save
     const loaded = loadSaveData();
@@ -176,6 +215,33 @@ export class GameEngine {
     this.renderer.domElement.style.height = '100%';
     this.renderer.domElement.setAttribute('data-testid', 'vice-canvas');
     mountEl.appendChild(this.renderer.domElement);
+
+    // WebGL context-loss lifecycle handling (prevents black-canvas stalls on GPU resets)
+    this.boundContextLost = (e: Event) => {
+      e.preventDefault();
+      this.isWebGLContextLost = true;
+      this.contextLostCount += 1;
+      if (this.renderDebugEnabled) {
+        console.warn('[RenderDebug] webglcontextlost', {
+          frameCount: this.renderedFrameCount,
+          contextLostCount: this.contextLostCount,
+        });
+      }
+    };
+    this.boundContextRestored = () => {
+      this.isWebGLContextLost = false;
+      this.contextRestoredCount += 1;
+      this.postPipeline.handleContextRestored();
+      this.pendingEnvForceRefresh = true;
+      if (this.renderDebugEnabled) {
+        console.info('[RenderDebug] webglcontextrestored', {
+          frameCount: this.renderedFrameCount,
+          contextRestoredCount: this.contextRestoredCount,
+        });
+      }
+    };
+    this.renderer.domElement.addEventListener('webglcontextlost', this.boundContextLost, false);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.boundContextRestored, false);
 
     // Scene + Dynamic Tropical Coastal PMREM Environment Reflections (replaces static RoomEnvironment)
     this.scene = new THREE.Scene();
@@ -277,9 +343,33 @@ export class GameEngine {
     this.renderFrame(0.016);
     this.emitHudSnapshot();
 
+    // Opt-in lightweight rendering diagnostic handle (?renderdebug=1)
+    if (this.renderDebugEnabled && typeof window !== 'undefined') {
+      window.__VICE_RENDER_DEBUG__ = {
+        getSnapshot: () => this.getRenderDebugSnapshot(),
+      };
+    }
+
     // Start loop
     this.lastTimestamp = performance.now();
     this.scheduleNextFrame();
+  }
+
+  public getRenderDebugSnapshot(): ViceRenderDebugSnapshot {
+    const gl = this.renderer.getContext();
+    return {
+      frameCount: this.renderedFrameCount,
+      gameState: this.gameState,
+      graphicsQuality: this.saveData.settings.graphics,
+      isSoftwareGl: this.isSoftwareGl,
+      timeHours: this.timeWeather.timeHours,
+      weather: this.timeWeather.weather,
+      contextLost: this.isWebGLContextLost || Boolean(gl?.isContextLost?.()),
+      contextLostCount: this.contextLostCount,
+      contextRestoredCount: this.contextRestoredCount,
+      pmrem: this.envReflections.getStats(),
+      post: this.postPipeline.getDiagnostics(),
+    };
   }
 
   public getHasExistingSave(): boolean {
@@ -778,7 +868,12 @@ export class GameEngine {
   }
 
   private renderFrame(dt: number): void {
-    this.envReflections.update(
+    const gl = this.renderer.getContext();
+    if (this.isWebGLContextLost || gl?.isContextLost?.()) {
+      return;
+    }
+
+    const pmremRefreshed = this.envReflections.update(
       dt,
       this.timeWeather.getEnvironmentSnapshot(),
       this.pendingEnvForceRefresh,
@@ -794,6 +889,21 @@ export class GameEngine {
       wantedStars: this.police.wanted.stars,
     });
     this.postPipeline.render(dt);
+    this.renderedFrameCount += 1;
+
+    if (this.renderDebugEnabled && pmremRefreshed) {
+      const pmremStats = this.envReflections.getStats();
+      const postDiag = this.postPipeline.getDiagnostics();
+      console.debug('[RenderDebug] PMREM refresh', {
+        frame: this.renderedFrameCount,
+        reason: pmremStats.lastRefreshReason,
+        durationMs: Number(pmremStats.lastRefreshDurationMs.toFixed(2)),
+        success: pmremStats.lastRefreshSuccess,
+        count: pmremStats.refreshCount,
+        composerActive: postDiag.composerActive,
+        bloomEnabled: postDiag.bloomEnabled,
+      });
+    }
   }
 
   private stepPlaying(dt: number): void {
@@ -1406,6 +1516,11 @@ export class GameEngine {
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     window.removeEventListener('resize', this.boundResize);
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.boundContextLost, false);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.boundContextRestored, false);
+    if (this.renderDebugEnabled && typeof window !== 'undefined' && window.__VICE_RENDER_DEBUG__) {
+      delete window.__VICE_RENDER_DEBUG__;
+    }
     this.input.detach();
     this.sound.dispose();
     this.world.dispose();

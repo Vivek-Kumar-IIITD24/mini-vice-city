@@ -338,7 +338,7 @@ export const SKY_DOME_FRAGMENT_SHADER = `
 
     // 2. Directional solar scattering aligned strictly with uSunDir
     float sunVis = smoothstep(-0.08, 0.06, sunDir.y);
-    float sunDot = max(dot(dir, sunDir), 0.0);
+    float sunDot = clamp(dot(dir, sunDir), 0.0, 1.0);
     float lowSunFactor = 1.0 - clamp(sunDir.y * 2.1, 0.0, 1.0);
     float sunGlowWide = pow(sunDot, 4.5) * 0.26;
     float sunGlowTight = pow(sunDot, 44.0) * 0.50;
@@ -347,7 +347,7 @@ export const SKY_DOME_FRAGMENT_SHADER = `
 
     // 3. Directional lunar halo aligned strictly with uMoonDir
     float moonVis = smoothstep(0.0, 0.14, moonDir.y) * smoothstep(0.35, 0.85, uNightFactor);
-    float moonDot = max(dot(dir, moonDir), 0.0);
+    float moonDot = clamp(dot(dir, moonDir), 0.0, 1.0);
     float moonGlow = (pow(moonDot, 10.0) * 0.15 + pow(moonDot, 84.0) * 0.32) * moonVis * (1.0 - uStormDarkness * 0.75);
     skyCol += uMoonColor * moonGlow;
 
@@ -464,7 +464,7 @@ export const SKY_DOME_FRAGMENT_SHADER = `
     float lowerMist = smoothstep(0.14 + uHazeStrength * 0.12, -0.02, h);
     skyCol = mix(skyCol, uBottomColor, lowerMist * (0.48 + uHazeStrength * 0.42));
 
-    gl_FragColor = vec4(skyCol, 1.0);
+    gl_FragColor = vec4(clamp(skyCol, vec3(0.0), vec3(32.0)), 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }

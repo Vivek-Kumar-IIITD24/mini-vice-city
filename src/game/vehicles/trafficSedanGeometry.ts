@@ -194,12 +194,43 @@ export function sampleTrafficSedanRoofRail(z: number): TrafficRoofRailSample {
 // Internal Geometry Utilities (Lightweight & Self-Contained)
 // ---------------------------------------------------------------------------
 
+function repairDegenerateNormals(
+  geo: THREE.BufferGeometry,
+  fallbackDir?: THREE.Vector3,
+): void {
+  const norm = geo.getAttribute('normal');
+  if (!norm) return;
+  const fx = fallbackDir ? fallbackDir.x : 0;
+  const fy = fallbackDir ? fallbackDir.y : 1;
+  const fz = fallbackDir ? fallbackDir.z : 0;
+  const fLen = Math.hypot(fx, fy, fz);
+  const rx = fLen > 1e-6 ? fx / fLen : 0;
+  const ry = fLen > 1e-6 ? fy / fLen : 1;
+  const rz = fLen > 1e-6 ? fz / fLen : 0;
+
+  let modified = false;
+  for (let i = 0; i < norm.count; i++) {
+    const nx = norm.getX(i);
+    const ny = norm.getY(i);
+    const nz = norm.getZ(i);
+    const lenSq = nx * nx + ny * ny + nz * nz;
+    if (!Number.isFinite(lenSq) || lenSq < 1e-6) {
+      norm.setXYZ(i, rx, ry, rz);
+      modified = true;
+    }
+  }
+  if (modified) {
+    norm.needsUpdate = true;
+  }
+}
+
 function normalizeForMerge(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   const nonIndexed = geo.index ? geo.toNonIndexed() : geo.clone();
   const posAttr = nonIndexed.getAttribute('position');
   if (!nonIndexed.getAttribute('normal')) {
     nonIndexed.computeVertexNormals();
   }
+  repairDegenerateNormals(nonIndexed);
   if (!nonIndexed.getAttribute('uv')) {
     const uvs = new Float32Array(posAttr.count * 2);
     nonIndexed.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
@@ -301,6 +332,7 @@ function ensureMeanNormalDirection(
   if (dotSum < 0) {
     flipWinding(geo);
   }
+  repairDegenerateNormals(geo, expectedDir);
   return geo;
 }
 
@@ -343,6 +375,8 @@ function createLoftedGrid(
 
   if (expectedDir) {
     ensureMeanNormalDirection(geo, expectedDir);
+  } else {
+    repairDegenerateNormals(geo);
   }
   return geo;
 }

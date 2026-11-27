@@ -66,12 +66,39 @@ export interface EnvironmentRefreshDecision {
   delta: EnvironmentDelta | null;
 }
 
+export interface EnvironmentRendererStateSnapshot {
+  hasRenderTarget: boolean;
+  cubeFace: number;
+  mipLevel: number;
+  viewport: [number, number, number, number];
+  scissor: [number, number, number, number];
+  scissorTest: boolean;
+  autoClear: boolean;
+  autoClearColor: boolean;
+  autoClearDepth: boolean;
+  autoClearStencil: boolean;
+  clearAlpha: number;
+}
+
 export interface EnvironmentSystemStats {
   refreshCount: number;
+  failedRefreshCount: number;
+  contextLostSkips: number;
   hasValidEnvironment: boolean;
   lastRefreshReason: EnvironmentRefreshDecision['reason'] | 'none';
+  lastRefreshSuccess: boolean;
+  lastRefreshDurationMs: number;
+  lastError: string | null;
+  lastStateBefore: EnvironmentRendererStateSnapshot | null;
+  lastStateAfter: EnvironmentRendererStateSnapshot | null;
   currentIntensity: number;
   config: EnvironmentQualityConfig;
+}
+
+export interface PmremGeneratorLike {
+  compileCubemapShader(): void;
+  fromScene(scene: THREE.Scene, sigma?: number): THREE.WebGLRenderTarget;
+  dispose(): void;
 }
 
 export function getEnvironmentQualityConfig(
@@ -273,7 +300,7 @@ void main() {
  *
  * NOTE: Deliberately omits tonemapping/sRGB conversion so PMREM stores true linear HDR radiance.
  */
-const ENV_DOME_FRAGMENT_SHADER = /* glsl */ `
+export const ENV_DOME_FRAGMENT_SHADER = /* glsl */ `
 uniform vec3 uSkyTop;
 uniform vec3 uSkyMid;
 uniform vec3 uSkyHorizon;
@@ -309,9 +336,16 @@ float valueNoise(vec2 p) {
 }
 
 void main() {
-  vec3 dir = normalize(vDir);
+  float dirLen = length(vDir);
+  vec3 dir = dirLen > 1e-5 ? (vDir / dirLen) : vec3(0.0, 1.0, 0.0);
+  float sunDirLen = length(uSunDir);
+  vec3 safeSunDir = sunDirLen > 1e-5 ? (uSunDir / sunDirLen) : vec3(0.0, 1.0, 0.0);
+  float moonDirLen = length(uMoonDir);
+  vec3 safeMoonDir = moonDirLen > 1e-5 ? (uMoonDir / moonDirLen) : vec3(0.0, 1.0, 0.0);
+
   float y = dir.y;
-  float dayAmt = clamp(1.0 - uNightFactor, 0.0, 1.0);
+  float nightClamped = clamp(uNightFactor, 0.0, 1.0);
+  float dayAmt = clamp(1.0 - nightClamped, 0.0, 1.0);
   float clearSky = clamp(1.0 - uStormDarkness * 0.88 - uCloudCoverage * 0.22, 0.06, 1.0);
 
   // 1. Upper Hemisphere: Atmospheric Sky Gradient
@@ -320,10 +354,10 @@ void main() {
   skyCol = mix(skyCol, uSkyTop, smoothstep(0.20, 0.86, hUp));
 
   // Subtle low-sun golden/sunset warm horizon band
-  float sunElev = clamp(uSunDir.y, -0.2, 1.0);
+  float sunElev = clamp(safeSunDir.y, -0.2, 1.0);
   float lowSunWarmth = smoothstep(0.45, 0.03, sunElev) * smoothstep(-0.14, 0.04, sunElev);
-  float sunCos = max(dot(dir, normalize(uSunDir)), 0.0);
-  float moonCos = max(dot(dir, normalize(uMoonDir)), 0.0);
+  float sunCos = clamp(dot(dir, safeSunDir), 0.0, 1.0);
+  float moonCos = clamp(dot(dir, safeMoonDir), 0.0, 1.0);
   float horizonBand = exp(-abs(y) * 5.2);
 
   skyCol += uSunColor * (0.28 + 0.55 * lowSunWarmth) * pow(sunCos, 3.0) * horizonBand * clearSky * dayAmt;
@@ -340,33 +374,37 @@ void main() {
     vec3 sunlitCloud = mix(vec3(0.96, 0.97, 1.0), uSunColor * 1.15, lowSunWarmth * 0.72);
     vec3 stormCloud = mix(vec3(0.22, 0.26, 0.32), vec3(0.06, 0.08, 0.12), uStormDarkness);
     vec3 nightCloud = vec3(0.05, 0.08, 0.15) + uMoonColor * pow(moonCos, 5.0) * 0.12;
-    vec3 cloudCol = mix(mix(sunlitCloud, stormCloud, uStormDarkness * 0.85), nightCloud, uNightFactor);
+    vec3 cloudCol = mix(mix(sunlitCloud, stormCloud, uStormDarkness * 0.85), nightCloud, nightClamped);
     skyCol = mix(skyCol, cloudCol, cloudMask * (0.35 + uCloudCoverage * 0.52));
   }
 
   // 3. Directional Linear HDR Solar Disc + Mie Halo (drives natural car/glass/ocean specular highlights)
-  float sunVisible = smoothstep(-0.04, 0.07, uSunDir.y) * clearSky;
+  float sunVisible = smoothstep(-0.04, 0.07, safeSunDir.y) * clearSky;
   float sunHalo = pow(sunCos, 24.0) * 0.75 + pow(sunCos, 160.0) * 2.85;
-  skyCol += uSunColor * sunHalo * sunVisible * (1.0 - uNightFactor * 0.85);
+  skyCol += uSunColor * sunHalo * sunVisible * (1.0 - nightClamped * 0.85);
 
   // 4. Directional Linear HDR Moon Halo at Night
-  float moonVisible = smoothstep(0.0, 0.10, uMoonDir.y) * uNightFactor * clamp(1.0 - uStormDarkness * 0.82, 0.12, 1.0);
+  float moonVisible = smoothstep(0.0, 0.10, safeMoonDir.y) * nightClamped * clamp(1.0 - uStormDarkness * 0.82, 0.12, 1.0);
   float moonHalo = pow(moonCos, 16.0) * 0.65 + pow(moonCos, 140.0) * 3.8;
   skyCol += uMoonColor * moonHalo * moonVisible;
   // Subtle deep indigo coastal night sky lift so specular car roofs & puddles reflect visible night sky gradient
-  skyCol += vec3(0.055, 0.11, 0.22) * smoothstep(-0.05, 0.45, y) * uNightFactor * (1.0 - uStormDarkness * 0.35);
+  skyCol += vec3(0.055, 0.11, 0.22) * smoothstep(-0.05, 0.45, y) * nightClamped * (1.0 - uStormDarkness * 0.35);
 
   // 5. Coastal Ground / Ocean Lower Hemisphere Bounce (y < 0)
   // East (+X) = Atlantic Ocean bounce; West (-X) = Vice City limestone/asphalt urban bounce
   float eastOceanMask = smoothstep(-0.25, 0.35, dir.x);
   vec3 dayOceanBounce = mix(vec3(0.06, 0.24, 0.34), vec3(0.11, 0.38, 0.46), clamp(1.0 - uStormDarkness, 0.0, 1.0));
-  vec3 nightOceanBounce = vec3(0.02, 0.045, 0.09) + uMoonColor * pow(max(dot(vec3(dir.x, -dir.y, dir.z), normalize(uMoonDir)), 0.0), 22.0) * 0.6 * moonVisible;
-  vec3 oceanBounce = mix(dayOceanBounce, nightOceanBounce, uNightFactor);
+  float moonReflCos = clamp(dot(vec3(dir.x, -dir.y, dir.z), safeMoonDir), 0.0, 1.0);
+  vec3 nightOceanBounce = vec3(0.02, 0.045, 0.09) + uMoonColor * pow(moonReflCos, 22.0) * 0.6 * moonVisible;
+  vec3 oceanBounce = mix(dayOceanBounce, nightOceanBounce, nightClamped);
   // Subtle sunlit glint on eastern ocean bounce
-  vec3 oceanReflDir = normalize(vec3(dir.x, abs(dir.y), dir.z));
-  oceanBounce += uSunColor * pow(max(dot(oceanReflDir, normalize(uSunDir)), 0.0), 28.0) * 0.55 * sunVisible * dayAmt;
+  vec3 oceanReflRaw = vec3(dir.x, abs(dir.y), dir.z);
+  float oceanReflLen = length(oceanReflRaw);
+  vec3 oceanReflDir = oceanReflLen > 1e-5 ? (oceanReflRaw / oceanReflLen) : vec3(0.0, 1.0, 0.0);
+  float sunReflCos = clamp(dot(oceanReflDir, safeSunDir), 0.0, 1.0);
+  oceanBounce += uSunColor * pow(sunReflCos, 28.0) * 0.55 * sunVisible * dayAmt;
 
-  vec3 urbanGroundBounce = mix(uHemiGround * 0.65 + vec3(0.08, 0.075, 0.07), vec3(0.025, 0.032, 0.055), uNightFactor);
+  vec3 urbanGroundBounce = mix(uHemiGround * 0.65 + vec3(0.08, 0.075, 0.07), vec3(0.025, 0.032, 0.055), nightClamped);
   vec3 groundCol = mix(urbanGroundBounce, oceanBounce, eastOceanMask);
   // Blend softly across horizon band so grazing reflections transition smoothly without a harsh equator seam
   vec3 finalCol = mix(groundCol, skyCol, smoothstep(-0.08, 0.06, y));
@@ -375,28 +413,30 @@ void main() {
   // Calibrated in linear HDR so with restrained night scene.environmentIntensity (~0.13-0.14),
   // rough matte surfaces stay dark while low-roughness clearcoat cars, skyscraper glass, and wet puddles
   // catch vivid magenta/cyan/warm-amber coastal city reflections.
-  if (uNightFactor > 0.05 && uUrbanAccentWeight > 0.01) {
-    float az = atan(dir.z, dir.x);
+  if (nightClamped > 0.05 && uUrbanAccentWeight > 0.01) {
+    float az = length(dir.xz) > 1e-4 ? atan(dir.z, dir.x) : 0.0;
     float citySide = smoothstep(0.75, -0.25, dir.x); // stronger toward Downtown / Neon Mile / Ocean Drive hotel strip
-    float skylineBand = exp(-pow((y - 0.06) * 6.5, 2.0));
-    float upperGlowBand = exp(-pow((y - 0.28) * 3.8, 2.0));
-    float ribbonA = pow(0.5 + 0.5 * sin(az * 7.0 + 0.6), 3.0);
-    float ribbonB = pow(0.5 + 0.5 * sin(az * 11.0 - 1.4), 3.5);
-    float ribbonC = pow(0.5 + 0.5 * sin(az * 5.0 + 2.3), 2.5);
-    float lampSpots = pow(0.5 + 0.5 * sin(az * 16.0 + 0.3), 6.0);
+    float dSkyline = (y - 0.06) * 6.5;
+    float dUpper = (y - 0.28) * 3.8;
+    float skylineBand = exp(-(dSkyline * dSkyline));
+    float upperGlowBand = exp(-(dUpper * dUpper));
+    float ribbonA = pow(clamp(0.5 + 0.5 * sin(az * 7.0 + 0.6), 0.0, 1.0), 3.0);
+    float ribbonB = pow(clamp(0.5 + 0.5 * sin(az * 11.0 - 1.4), 0.0, 1.0), 3.5);
+    float ribbonC = pow(clamp(0.5 + 0.5 * sin(az * 5.0 + 2.3), 0.0, 1.0), 2.5);
+    float lampSpots = pow(clamp(0.5 + 0.5 * sin(az * 16.0 + 0.3), 0.0, 1.0), 6.0);
 
     vec3 neonMagenta = vec3(1.0, 0.24, 0.66) * ribbonA * 4.2;
     vec3 neonCyan = vec3(0.20, 0.88, 1.0) * ribbonB * 3.8;
     vec3 hotelAmber = vec3(1.0, 0.74, 0.36) * ribbonC * 3.2;
     vec3 streetLampSheen = vec3(1.0, 0.80, 0.48) * lampSpots * upperGlowBand * 2.6;
 
-    float rainWetBoost = 1.0 + uRainAmount * 0.65;
-    float nightWeight = pow(uNightFactor, 1.15) * uUrbanAccentWeight * rainWetBoost;
+    float rainWetBoost = 1.0 + clamp(uRainAmount, 0.0, 1.0) * 0.65;
+    float nightWeight = pow(nightClamped, 1.15) * uUrbanAccentWeight * rainWetBoost;
     finalCol += (neonMagenta + neonCyan + hotelAmber) * skylineBand * (0.42 + 0.58 * citySide) * nightWeight;
     finalCol += streetLampSheen * nightWeight;
   }
 
-  gl_FragColor = vec4(max(finalCol, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(clamp(finalCol, vec3(0.0), vec3(32.0)), 1.0);
 }
 `;
 
@@ -460,20 +500,33 @@ function copySnapshotInto(
  * expensive recursive scene cubemap rendering.
  */
 export class DynamicEnvironmentSystem {
+  private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly isSoftwareGl: boolean;
-  private readonly pmremGenerator: THREE.PMREMGenerator;
+  private readonly pmremGenerator: PmremGeneratorLike;
   private readonly envScene: THREE.Scene;
   private readonly envDomeGeo: THREE.SphereGeometry;
   private readonly envDomeMat: THREE.ShaderMaterial;
   private readonly envDomeMesh: THREE.Mesh;
+
+  // Scratch vectors to avoid per-refresh allocations during renderer state save/restore
+  private readonly tmpViewport = new THREE.Vector4();
+  private readonly tmpScissor = new THREE.Vector4();
+  private readonly tmpClearColor = new THREE.Color();
 
   private config: EnvironmentQualityConfig;
   private currentRT: THREE.WebGLRenderTarget | null = null;
   private lastSnapshot: EnvironmentAtmosphereSnapshot | null = null;
   private elapsedSinceRefresh = 0;
   private refreshCount = 0;
+  private failedRefreshCount = 0;
+  private contextLostSkips = 0;
   private lastRefreshReason: EnvironmentSystemStats['lastRefreshReason'] = 'none';
+  private lastRefreshSuccess = false;
+  private lastRefreshDurationMs = 0;
+  private lastError: string | null = null;
+  private lastStateBefore: EnvironmentRendererStateSnapshot | null = null;
+  private lastStateAfter: EnvironmentRendererStateSnapshot | null = null;
   private currentIntensity = 0.72;
   private pendingQualityRefresh = false;
   private disposed = false;
@@ -483,12 +536,14 @@ export class DynamicEnvironmentSystem {
     scene: THREE.Scene,
     quality: GraphicsQuality,
     isSoftwareGl: boolean,
+    pmremGeneratorOverride?: PmremGeneratorLike,
   ) {
+    this.renderer = renderer;
     this.scene = scene;
     this.isSoftwareGl = isSoftwareGl;
     this.config = getEnvironmentQualityConfig(quality, isSoftwareGl);
 
-    this.pmremGenerator = new THREE.PMREMGenerator(renderer);
+    this.pmremGenerator = pmremGeneratorOverride ?? new THREE.PMREMGenerator(renderer);
     this.pmremGenerator.compileCubemapShader();
 
     this.envScene = new THREE.Scene();
@@ -519,6 +574,59 @@ export class DynamicEnvironmentSystem {
     });
     this.envDomeMesh = new THREE.Mesh(this.envDomeGeo, this.envDomeMat);
     this.envScene.add(this.envDomeMesh);
+  }
+
+  private isRendererContextLost(): boolean {
+    try {
+      const gl = this.renderer.getContext?.();
+      return Boolean(gl && typeof gl.isContextLost === 'function' && gl.isContextLost());
+    } catch {
+      return false;
+    }
+  }
+
+  private captureRendererState(): EnvironmentRendererStateSnapshot {
+    const hasRenderTarget =
+      typeof this.renderer.getRenderTarget === 'function'
+        ? this.renderer.getRenderTarget() !== null
+        : false;
+    const cubeFace =
+      typeof this.renderer.getActiveCubeFace === 'function'
+        ? this.renderer.getActiveCubeFace()
+        : 0;
+    const mipLevel =
+      typeof this.renderer.getActiveMipmapLevel === 'function'
+        ? this.renderer.getActiveMipmapLevel()
+        : 0;
+    const vp = new THREE.Vector4();
+    const sc = new THREE.Vector4();
+    if (typeof this.renderer.getViewport === 'function') {
+      this.renderer.getViewport(vp);
+    }
+    if (typeof this.renderer.getScissor === 'function') {
+      this.renderer.getScissor(sc);
+    }
+    const scissorTest =
+      typeof this.renderer.getScissorTest === 'function'
+        ? this.renderer.getScissorTest()
+        : false;
+    const clearAlpha =
+      typeof this.renderer.getClearAlpha === 'function'
+        ? this.renderer.getClearAlpha()
+        : 1;
+    return {
+      hasRenderTarget,
+      cubeFace,
+      mipLevel,
+      viewport: [vp.x, vp.y, vp.z, vp.w],
+      scissor: [sc.x, sc.y, sc.z, sc.w],
+      scissorTest,
+      autoClear: this.renderer.autoClear,
+      autoClearColor: this.renderer.autoClearColor,
+      autoClearDepth: this.renderer.autoClearDepth,
+      autoClearStencil: this.renderer.autoClearStencil,
+      clearAlpha,
+    };
   }
 
   public setQuality(quality: GraphicsQuality): void {
@@ -583,6 +691,13 @@ export class DynamicEnvironmentSystem {
     snapshot: EnvironmentAtmosphereSnapshot,
     reason: EnvironmentRefreshDecision['reason'],
   ): boolean {
+    if (this.isRendererContextLost()) {
+      this.contextLostSkips += 1;
+      this.lastRefreshReason = reason;
+      this.lastRefreshSuccess = false;
+      return false;
+    }
+
     const u = this.envDomeMat.uniforms;
     (u.uSkyTop.value as THREE.Color).setRGB(snapshot.skyTop.r, snapshot.skyTop.g, snapshot.skyTop.b);
     (u.uSkyMid.value as THREE.Color).setRGB(snapshot.skyMid.r, snapshot.skyMid.g, snapshot.skyMid.b);
@@ -617,13 +732,67 @@ export class DynamicEnvironmentSystem {
     u.uStormDarkness.value = snapshot.stormDarkness;
     u.uRainAmount.value = snapshot.rainAmount;
 
+    // Save complete WebGLRenderer state before PMREM generation so offscreen cubemap/blur passes
+    // can never leak render target, viewport, scissor, autoClear, or clear color into the main frame.
+    const startMs = typeof performance !== 'undefined' ? performance.now() : 0;
+    const prevTarget =
+      typeof this.renderer.getRenderTarget === 'function'
+        ? this.renderer.getRenderTarget()
+        : null;
+    const prevCubeFace =
+      typeof this.renderer.getActiveCubeFace === 'function'
+        ? this.renderer.getActiveCubeFace()
+        : 0;
+    const prevMipLevel =
+      typeof this.renderer.getActiveMipmapLevel === 'function'
+        ? this.renderer.getActiveMipmapLevel()
+        : 0;
+    const hasViewportApi =
+      typeof this.renderer.getViewport === 'function' &&
+      typeof this.renderer.setViewport === 'function';
+    if (hasViewportApi) {
+      this.renderer.getViewport(this.tmpViewport);
+    }
+    const hasScissorApi =
+      typeof this.renderer.getScissor === 'function' &&
+      typeof this.renderer.setScissor === 'function';
+    if (hasScissorApi) {
+      this.renderer.getScissor(this.tmpScissor);
+    }
+    const hasScissorTestApi =
+      typeof this.renderer.getScissorTest === 'function' &&
+      typeof this.renderer.setScissorTest === 'function';
+    const prevScissorTest = hasScissorTestApi ? this.renderer.getScissorTest() : false;
+    const prevAutoClear = this.renderer.autoClear;
+    const prevAutoClearColor = this.renderer.autoClearColor;
+    const prevAutoClearDepth = this.renderer.autoClearDepth;
+    const prevAutoClearStencil = this.renderer.autoClearStencil;
+    const hasClearColorApi =
+      typeof this.renderer.getClearColor === 'function' &&
+      typeof this.renderer.setClearColor === 'function';
+    if (hasClearColorApi) {
+      this.renderer.getClearColor(this.tmpClearColor);
+    }
+    const prevClearAlpha =
+      typeof this.renderer.getClearAlpha === 'function' ? this.renderer.getClearAlpha() : 1;
+    const prevEnvBg = this.envScene.background;
+
+    this.lastStateBefore = this.captureRendererState();
+
+    let rtToDispose: THREE.WebGLRenderTarget | null = null;
+    let succeeded = false;
+
     try {
       const nextRT = this.pmremGenerator.fromScene(this.envScene, this.config.sigma);
+      if (!nextRT || !nextRT.texture) {
+        throw new Error('PMREMGenerator.fromScene returned an invalid render target');
+      }
+
       const prevRT = this.currentRT;
       this.currentRT = nextRT;
       this.scene.environment = nextRT.texture;
-      if (prevRT) {
-        prevRT.dispose();
+      if (prevRT && prevRT !== nextRT) {
+        rtToDispose = prevRT;
       }
 
       if (!this.lastSnapshot) {
@@ -634,18 +803,63 @@ export class DynamicEnvironmentSystem {
       this.elapsedSinceRefresh = 0;
       this.refreshCount += 1;
       this.lastRefreshReason = reason;
-      return true;
-    } catch {
+      this.lastRefreshSuccess = true;
+      this.lastError = null;
+      succeeded = true;
+    } catch (err) {
       // Safe fallback: preserve the previous valid environment render target if regeneration fails
-      return false;
+      this.failedRefreshCount += 1;
+      this.lastRefreshReason = reason;
+      this.lastRefreshSuccess = false;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      succeeded = false;
+    } finally {
+      this.envScene.background = prevEnvBg;
+      this.renderer.autoClear = prevAutoClear;
+      this.renderer.autoClearColor = prevAutoClearColor;
+      this.renderer.autoClearDepth = prevAutoClearDepth;
+      this.renderer.autoClearStencil = prevAutoClearStencil;
+      if (hasClearColorApi) {
+        this.renderer.setClearColor(this.tmpClearColor, prevClearAlpha);
+      }
+      if (typeof this.renderer.setRenderTarget === 'function') {
+        this.renderer.setRenderTarget(prevTarget, prevCubeFace, prevMipLevel);
+      }
+      if (hasViewportApi) {
+        this.renderer.setViewport(this.tmpViewport);
+      }
+      if (hasScissorApi) {
+        this.renderer.setScissor(this.tmpScissor);
+      }
+      if (hasScissorTestApi) {
+        this.renderer.setScissorTest(prevScissorTest);
+      }
+      this.lastStateAfter = this.captureRendererState();
+      if (typeof performance !== 'undefined') {
+        this.lastRefreshDurationMs = Math.max(0, performance.now() - startMs);
+      }
     }
+
+    // Dispose superseded render target strictly AFTER renderer state is restored and replacement succeeded
+    if (rtToDispose) {
+      rtToDispose.dispose();
+    }
+
+    return succeeded;
   }
 
   public getStats(): EnvironmentSystemStats {
     return {
       refreshCount: this.refreshCount,
+      failedRefreshCount: this.failedRefreshCount,
+      contextLostSkips: this.contextLostSkips,
       hasValidEnvironment: this.currentRT !== null,
       lastRefreshReason: this.lastRefreshReason,
+      lastRefreshSuccess: this.lastRefreshSuccess,
+      lastRefreshDurationMs: this.lastRefreshDurationMs,
+      lastError: this.lastError,
+      lastStateBefore: this.lastStateBefore,
+      lastStateAfter: this.lastStateAfter,
       currentIntensity: this.currentIntensity,
       config: { ...this.config },
     };

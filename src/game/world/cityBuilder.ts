@@ -18,6 +18,11 @@ import {
   buildOceanDriveArchitecture,
   OceanDriveArchitectureStats,
 } from './oceanDriveArchitecture';
+import {
+  buildCoralHeightsArchitecture,
+  CoralHeightsArchitectureStats,
+  isCoralHeightsBuildingSpec,
+} from './coralHeightsArchitecture';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -58,6 +63,7 @@ export interface BuiltCityWorld {
   environmentMeshesForCamera: THREE.Object3D[];
   downtownArchitectureStats: DowntownArchitectureStats;
   oceanDriveArchitectureStats: OceanDriveArchitectureStats;
+  coralHeightsArchitectureStats: CoralHeightsArchitectureStats;
   dispose: () => void;
 }
 
@@ -230,29 +236,31 @@ export function buildCityWorld(
              sin(wPos.y * 1.28 - wPos.x * 1.05 + uTime * 3.1) * 0.016
            ) * chop;
            vec3 waterN = normalize(vec3(-vOceanSlope.x + rx, 1.0, -vOceanSlope.y + rz));
-           vec3 viewDirW = normalize(cameraPosition - vOceanWorldPos);
-           float nDotV = max(dot(waterN, viewDirW), 0.0);
-           float fresnel = 0.03 + 0.97 * pow(1.0 - nDotV, 4.5);
+           vec3 viewVec = cameraPosition - vOceanWorldPos;
+           vec3 viewDirW = viewVec / max(length(viewVec), 1e-4);
+           float nDotV = clamp(dot(waterN, viewDirW), 0.0, 1.0);
+           float fresnel = 0.03 + 0.97 * pow(max(1.0 - nDotV, 0.0), 4.5);
            vec3 reflDir = reflect(-viewDirW, waterN);
-           float reflElev = clamp(reflDir.y, 0.0, 1.0);
+           vec3 safeReflDir = reflDir / max(length(reflDir), 1e-4);
+           float reflElev = clamp(safeReflDir.y, 0.0, 1.0);
            vec3 skyRefl = mix(uSkyHorizon, uSkyTop, smoothstep(0.0, 0.55, reflElev));
 
            float skyClear = clamp(1.0 - uStormDarkness * 0.78 - uCloudCoverage * 0.20, 0.12, 1.0);
            float sunAbove = smoothstep(-0.05, 0.08, uSunDir.y);
            float lowSunWarm = smoothstep(0.55, 0.04, uSunDir.y) * sunAbove;
-           float sunAlign = max(dot(normalize(reflDir), normalize(uSunDir)), 0.0);
+           float sunAlign = clamp(dot(safeReflDir, normalize(uSunDir)), 0.0, 1.0);
            skyRefl += uSunColor * pow(sunAlign, 4.5) * (0.35 + 0.95 * lowSunWarm) * skyClear * (1.0 - uNightFactor * 0.85);
 
            float sunGlintExp = mix(220.0, 40.0, uStormDarkness);
            float sunGlint = pow(sunAlign, sunGlintExp) * (1.85 + 1.25 * lowSunWarm) * sunAbove * skyClear * (1.0 - uNightFactor * 0.85);
 
            float moonAbove = smoothstep(0.0, 0.10, uMoonDir.y) * uNightFactor;
-           float moonAlign = max(dot(normalize(reflDir), normalize(uMoonDir)), 0.0);
+           float moonAlign = clamp(dot(safeReflDir, normalize(uMoonDir)), 0.0, 1.0);
            float moonGlint = pow(moonAlign, mix(140.0, 36.0, uStormDarkness)) * 1.55 * moonAbove * skyClear;
 
            float reflWeight = fresnel * (0.76 - uStormDarkness * 0.24);
            outgoingLight = mix(outgoingLight, skyRefl * (0.82 + 0.22 * (1.0 - uNightFactor)), reflWeight);
-           outgoingLight += uSunColor * sunGlint + uMoonColor * moonGlint;
+           outgoingLight = clamp(outgoingLight + uSunColor * sunGlint + uMoonColor * moonGlint, vec3(0.0), vec3(32.0));
            #include <opaque_fragment>`,
         );
   };
@@ -809,11 +817,14 @@ export function buildCityWorld(
 
   const downtownTowerSpecs: BuildingSpec[] = [];
   const oceanDriveHotelSpecs: BuildingSpec[] = [];
+  const coralHeightsSpecs: BuildingSpec[] = [];
   for (const b of layout.buildings) {
     if (b.style === 'skyscraper' || b.style === 'landmark') {
       downtownTowerSpecs.push(b);
     } else if (b.style === 'hotel') {
       oceanDriveHotelSpecs.push(b);
+    } else if (isCoralHeightsBuildingSpec(b)) {
+      coralHeightsSpecs.push(b);
     } else {
       buildArchitecturalStructure(b);
     }
@@ -832,6 +843,14 @@ export function buildCityWorld(
   const oceanDriveArchitectureStats = buildOceanDriveArchitecture(oceanDriveHotelSpecs, {
     root,
     textures,
+    emissiveBuildingMaterials,
+    neonTrimMaterials,
+    environmentMeshesForCamera,
+    disposables,
+  });
+
+  const coralHeightsArchitectureStats = buildCoralHeightsArchitecture(coralHeightsSpecs, {
+    root,
     emissiveBuildingMaterials,
     neonTrimMaterials,
     environmentMeshesForCamera,
@@ -1151,6 +1170,7 @@ export function buildCityWorld(
     environmentMeshesForCamera,
     downtownArchitectureStats,
     oceanDriveArchitectureStats,
+    coralHeightsArchitectureStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

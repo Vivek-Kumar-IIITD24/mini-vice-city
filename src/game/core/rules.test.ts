@@ -13,7 +13,7 @@ import {
   persistSaveData,
   sanitizeSaveData,
 } from './saveSystem';
-import { generateCityLayout, TRAFFIC_COLORS, VEHICLE_CATALOG } from '../world/cityData';
+import { generateCityLayout, ROAD_COORDS, TRAFFIC_COLORS, VEHICLE_CATALOG } from '../world/cityData';
 import {
   computeGearLabel,
   createInitialVehicleState,
@@ -151,6 +151,15 @@ import {
   createRoundedCornerGeometry,
   resolveOceanDriveHotelProfile,
 } from '../world/oceanDriveArchitecture';
+import {
+  createArchedFrameGeometry,
+  createBalconyCorbelGeometry,
+  createGableRoofGeometry,
+  createHippedTerracottaRoofGeometry,
+  createSlopedAwningGeometry,
+  isCoralHeightsBuildingSpec,
+  resolveCoralHeightsProfile,
+} from '../world/coralHeightsArchitecture';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -172,15 +181,21 @@ import {
   stepCloudAtmosphereState,
 } from '../time/skyClouds';
 import {
+  CinematicGradeShader,
+  CinematicPostPipeline,
+  HARDENED_BLOOM_HIGHPASS_FRAGMENT_SHADER,
   computeCinematicPostState,
   getPostProcessingConfigForQuality,
 } from '../rendering/postProcessing';
 import {
+  DynamicEnvironmentSystem,
+  ENV_DOME_FRAGMENT_SHADER,
   computeEnvironmentDelta,
   computeEnvironmentIntensity,
   EnvironmentAtmosphereSnapshot,
   getEnvironmentQualityConfig,
   shouldRefreshEnvironment,
+  type PmremGeneratorLike,
 } from '../rendering/environmentReflections';
 import {
   createVehicleMesh,
@@ -3573,6 +3588,614 @@ test('Phase 2D-2: Ocean Drive hotels receive distinct archetypes, aligned balcon
   weather.dispose();
   world.dispose();
 });
+
+test('Phase 2D-3: Coral Heights custom architectural geometries have finite vertices, valid outward normals, and normalized bounds', () => {
+  const hippedRoof = createHippedTerracottaRoofGeometry();
+  const gableRoof = createGableRoofGeometry();
+  const archedFrame = createArchedFrameGeometry();
+  const slopedAwning = createSlopedAwningGeometry();
+  const corbel = createBalconyCorbelGeometry();
+
+  for (const [label, geo] of [
+    ['hippedRoof', hippedRoof],
+    ['gableRoof', gableRoof],
+    ['archedFrame', archedFrame],
+    ['slopedAwning', slopedAwning],
+    ['corbel', corbel],
+  ] as const) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 18, `${label} must have sculpted vertex geometry`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have vertex normals matching positions`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) &&
+          Number.isFinite(pos.getY(i)) &&
+          Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} must be finite`,
+      );
+      const nLen = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(nLen > 0.9 && nLen < 1.1, `${label} normal ${i} must be unit length, got ${nLen}`);
+    }
+    assert.ok(geo.boundingBox && geo.boundingSphere, `${label} must compute bounds`);
+    assert.ok(
+      geo.boundingBox.min.y >= -0.02 && geo.boundingBox.max.y <= 1.02,
+      `${label} Y bounds must be normalized [0..1], got [${geo.boundingBox.min.y}, ${geo.boundingBox.max.y}]`,
+    );
+  }
+
+  // Verify hipped and gable roof top slopes point upward (+Y)
+  for (const [label, geo] of [
+    ['hippedRoof', hippedRoof],
+    ['gableRoof', gableRoof],
+  ] as const) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    let upwardSlopeVerts = 0;
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) > 0.5 && norm.getY(i) > 0.35) {
+        upwardSlopeVerts++;
+      }
+    }
+    assert.ok(upwardSlopeVerts >= 4, `${label} ridge/slope normals must face outward/upward`);
+  }
+
+  // Verify sloped awning and corbel anchor flush at wall plane Z=0 and extend outward to Z=+1
+  assert.ok(Math.abs(slopedAwning.boundingBox!.min.z) < 0.01);
+  assert.ok(Math.abs(slopedAwning.boundingBox!.max.z - 1) < 0.01);
+  assert.ok(Math.abs(corbel.boundingBox!.min.z) < 0.01);
+  assert.ok(Math.abs(corbel.boundingBox!.max.z - 1) < 0.01);
+
+  hippedRoof.dispose();
+  gableRoof.dispose();
+  archedFrame.dispose();
+  slopedAwning.dispose();
+  corbel.dispose();
+});
+
+test('Phase 2D-3: Coral Heights villas, apartments, and neighbourhood shop have distinct archetypes, safe clearances, InstancedMesh batching, subtle day/night PBR, disposal, and preserve Phase 2D-1 & 2D-2', () => {
+  const layout = generateCityLayout();
+  const coralSpecs = layout.buildings.filter(isCoralHeightsBuildingSpec);
+
+  // 1. Exact Coral Heights residential-district selection (9 buildings; excludes Downtown dt_plaza_shop and Ocean Drive hotels)
+  const expectedIds = [
+    'res_villa_1',
+    'res_villa_2',
+    'res_villa_3',
+    'res_apt_1',
+    'res_apt_2',
+    'res_shop_1',
+    'north_villa_1',
+    'north_apt_1',
+    'west_res_1',
+  ].sort();
+  assert.deepEqual(
+    coralSpecs.map((b) => b.id).sort(),
+    expectedIds,
+    'only the 9 Coral Heights residential-district buildings should route to buildCoralHeightsArchitecture',
+  );
+  const dtShop = layout.buildings.find((b) => b.id === 'dt_plaza_shop')!;
+  assert.equal(isCoralHeightsBuildingSpec(dtShop), false, 'Downtown dt_plaza_shop must NOT route into Coral Heights');
+  for (const h of layout.buildings.filter((b) => b.style === 'hotel')) {
+    assert.equal(isCoralHeightsBuildingSpec(h), false, `Ocean Drive hotel ${h.id} must NOT route into Coral Heights`);
+  }
+
+  // 2. Distinct villa archetypes (4 villas -> 4 distinct archetypes & rooflines)
+  const villaProfiles = coralSpecs
+    .filter((b) => b.style === 'villa')
+    .map((b) => resolveCoralHeightsProfile(b));
+  assert.equal(villaProfiles.length, 4);
+  assert.equal(new Set(villaProfiles.map((p) => p.archetype)).size, 4, 'all 4 villas must have distinct archetypes');
+  assert.equal(new Set(villaProfiles.map((p) => p.roofStyle)).size, 4, 'all 4 villas must have distinct rooflines');
+
+  // 3. Varied apartment complexes (4 apartments -> 4 distinct archetypes, balcony styles & rooftops)
+  const aptProfiles = coralSpecs
+    .filter((b) => b.style === 'apartment')
+    .map((b) => resolveCoralHeightsProfile(b));
+  assert.equal(aptProfiles.length, 4);
+  assert.equal(new Set(aptProfiles.map((p) => p.archetype)).size, 4, 'all 4 apartments must have distinct archetypes');
+  assert.equal(new Set(aptProfiles.map((p) => p.balconyStyle)).size, 4, 'apartments must vary balcony configurations');
+  assert.equal(new Set(aptProfiles.map((p) => p.roofStyle)).size, 4, 'apartments must vary rooftop forms');
+
+  // 4. Neighbourhood shop distinct commercial storefront
+  const shopSpec = coralSpecs.find((b) => b.id === 'res_shop_1')!;
+  const shopProfile = resolveCoralHeightsProfile(shopSpec);
+  assert.equal(shopProfile.archetype, 'neighbourhood_corner_shop');
+  assert.equal(shopProfile.hasAwning, true);
+  assert.equal(shopProfile.hasSignage, true);
+
+  // Build full city world and verify live integration
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const chStats = world.coralHeightsArchitectureStats;
+  const odStats = world.oceanDriveArchitectureStats;
+  const dtStats = world.downtownArchitectureStats;
+
+  assert.equal(chStats.totalCount, 9);
+  assert.equal(chStats.villaCount, 4);
+  assert.equal(chStats.apartmentCount, 4);
+  assert.equal(chStats.shopCount, 1);
+  assert.equal(chStats.buildingMaterialCount, 9);
+  assert.ok(chStats.sharedMaterialCount <= 16, `shared Coral Heights materials should stay compact, got ${chStats.sharedMaterialCount}`);
+  assert.ok(chStats.instancedBatches >= 11, `expected InstancedMesh batching for repeated details, got ${chStats.instancedBatches}`);
+  assert.ok(chStats.totalFacadeInstances >= 900, `expected rich instanced windows/balconies/trims, got ${chStats.totalFacadeInstances}`);
+  assert.ok(chStats.totalWindowUnits >= 120, `expected recessed 3D windows across Coral Heights, got ${chStats.totalWindowUnits}`);
+  assert.ok(chStats.totalBalconyUnits >= 22, `expected residential balconies across villas/apartments/shop, got ${chStats.totalBalconyUnits}`);
+
+  // 5. Verify mounted groups, exact positions, commercial shop signage & rooftops
+  for (const spec of coralSpecs) {
+    const group = world.root.getObjectByName(`coral_heights_${spec.id}`) as THREE.Group | undefined;
+    assert.ok(group, `group coral_heights_${spec.id} must be mounted in city world`);
+    assert.equal(group.position.x, spec.x);
+    assert.equal(group.position.z, spec.z);
+    assert.ok(group.children.length >= 3, `${spec.id} must be composite multi-part architecture`);
+    const summary = chStats.buildings.find((b) => b.id === spec.id)!;
+    assert.ok(summary.windowCount >= 8, `${spec.id} must have multi-facade residential windows`);
+    assert.ok(summary.pinnacleY > spec.height + 0.4, `${spec.id} roof structure must sit cleanly atop building`);
+  }
+
+  const shopGroup = world.root.getObjectByName('coral_heights_res_shop_1') as THREE.Group;
+  assert.ok(shopGroup.getObjectByName('coral_shop_sign_+x'), 'shop must mount East boulevard signboard');
+  assert.ok(shopGroup.getObjectByName('coral_shop_sign_+z'), 'shop must mount South corner street signboard');
+
+  // 6. Verify all Coral Heights InstancedMesh batches have finite matrices, valid bounding spheres,
+  // stay grounded (y >= 0), keep full road & sidewalk clearances, and never encroach on Bayside Palm Park
+  const chInstMeshes = world.root.children.filter(
+    (c): c is THREE.InstancedMesh =>
+      c instanceof THREE.InstancedMesh && c.name.startsWith('coral_heights_'),
+  );
+  assert.equal(chInstMeshes.length, chStats.instancedBatches);
+
+  const tmpMat = new THREE.Matrix4();
+  const tmpPos = new THREE.Vector3();
+  const roadHalf = 7.0; // ROAD_WIDTH / 2
+  const sidewalkOuter = 10.5; // ROAD_WIDTH / 2 + SIDEWALK_WIDTH
+  for (const inst of chInstMeshes) {
+    assert.ok(inst.count > 0);
+    assert.ok(
+      inst.boundingSphere && Number.isFinite(inst.boundingSphere.radius) && inst.boundingSphere.radius > 0,
+      `${inst.name} must compute a valid bounding sphere`,
+    );
+    for (let i = 0; i < inst.count; i++) {
+      inst.getMatrixAt(i, tmpMat);
+      assert.ok(tmpMat.elements.every((v) => Number.isFinite(v)), `${inst.name}[${i}] matrix must be finite`);
+      tmpPos.setFromMatrixPosition(tmpMat);
+      assert.ok(tmpPos.y >= 0, `${inst.name}[${i}] must not sink below ground (y=${tmpPos.y})`);
+
+      // Must never protrude into any actual road strip ([-112..112]) or sidewalk corridor ([-106.5..106.5])
+      const inRoadSpanZ = Math.abs(tmpPos.z) <= 112;
+      const inRoadSpanX = Math.abs(tmpPos.x) <= 112;
+      const inSidewalkSpanZ = Math.abs(tmpPos.z) <= 106.5;
+      const inSidewalkSpanX = Math.abs(tmpPos.x) <= 106.5;
+      for (const rc of ROAD_COORDS) {
+        if (inRoadSpanZ) {
+          assert.ok(
+            Math.abs(tmpPos.x - rc) > roadHalf + 0.5,
+            `${inst.name}[${i}] must stay clear of NS road x=${rc} (got x=${tmpPos.x.toFixed(2)}, z=${tmpPos.z.toFixed(2)})`,
+          );
+        }
+        if (inRoadSpanX) {
+          assert.ok(
+            Math.abs(tmpPos.z - rc) > roadHalf + 0.5,
+            `${inst.name}[${i}] must stay clear of EW road z=${rc} (got x=${tmpPos.x.toFixed(2)}, z=${tmpPos.z.toFixed(2)})`,
+          );
+        }
+        if (inSidewalkSpanZ) {
+          assert.ok(
+            Math.abs(tmpPos.x - rc) > sidewalkOuter,
+            `${inst.name}[${i}] must stay clear of NS sidewalk around x=${rc} (got x=${tmpPos.x.toFixed(2)}, z=${tmpPos.z.toFixed(2)})`,
+          );
+        }
+        if (inSidewalkSpanX) {
+          assert.ok(
+            Math.abs(tmpPos.z - rc) > sidewalkOuter,
+            `${inst.name}[${i}] must stay clear of EW sidewalk around z=${rc} (got x=${tmpPos.x.toFixed(2)}, z=${tmpPos.z.toFixed(2)})`,
+          );
+        }
+      }
+
+      // Must never encroach onto Bayside Palm Park lawn (x in [-82, -46], z in [-68, -44])
+      const insidePark =
+        tmpPos.x > -82 && tmpPos.x < -46 && tmpPos.z > -68.0 && tmpPos.z < -44.0;
+      assert.equal(
+        insidePark,
+        false,
+        `${inst.name}[${i}] must not overlap Bayside Palm Park lawn (x=${tmpPos.x.toFixed(2)}, z=${tmpPos.z.toFixed(2)})`,
+      );
+    }
+  }
+
+  // 7. Verify natural day/night lighting calibration via TimeAndWeatherSystem
+  const weather = new TimeAndWeatherSystem(scene, false);
+  weather.setTimePreset(TimePreset.Afternoon);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, -64, -24, world, 0, 0);
+  const litWindowBatch = world.root.getObjectByName('coral_heights_lit_glass_inst') as THREE.InstancedMesh;
+  const darkWindowBatch = world.root.getObjectByName('coral_heights_dark_glass_inst') as THREE.InstancedMesh;
+  const litMat = litWindowBatch.material as THREE.MeshPhysicalMaterial;
+  const darkMat = darkWindowBatch.material as THREE.MeshPhysicalMaterial;
+  assert.ok(litMat.emissiveIntensity < 0.25, `daytime residential windows must stay subtle, got ${litMat.emissiveIntensity}`);
+  assert.ok(darkMat.emissiveIntensity < 0.1, `daytime unlit glass must stay restrained, got ${darkMat.emissiveIntensity}`);
+
+  weather.setTimePreset(TimePreset.Night);
+  weather.update(0.05, -64, -24, world, 0, 0);
+  assert.ok(litMat.emissiveIntensity > 1.0, `night lit residential windows should glow warmly, got ${litMat.emissiveIntensity}`);
+  assert.ok(darkMat.emissiveIntensity < 0.15, `night unlit residential windows must stay dark/reflective, got ${darkMat.emissiveIntensity}`);
+
+  // 8. Verify Phase 2D-1 (Downtown) and Phase 2D-2 (Ocean Drive) remain 100% preserved
+  assert.equal(dtStats.skyscraperCount, 6);
+  assert.equal(dtStats.landmarkCount, 1);
+  assert.ok(dtStats.viceTowerPinnacleHeight > 85);
+  assert.ok(world.root.getObjectByName('downtown_vice_tower_landmark'));
+  assert.equal(odStats.hotelCount, 11);
+  assert.ok(odStats.rooftopPoolCount >= 3 && odStats.rooftopPoolCount <= 5);
+  assert.ok(world.root.getObjectByName('ocean_drive_od_hotel_deco'));
+
+  // 9. Clean GPU disposal
+  weather.dispose();
+  world.dispose();
+});
+
+function assertValidGeometryNormals(geo: THREE.BufferGeometry, label: string): void {
+  const pos = geo.getAttribute('position');
+  if (pos) {
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      assert.ok(
+        Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z),
+        `${label}: vertex ${i} has non-finite position (${x}, ${y}, ${z})`,
+      );
+    }
+  }
+  const norm = geo.getAttribute('normal');
+  if (norm) {
+    for (let i = 0; i < norm.count; i++) {
+      const nx = norm.getX(i);
+      const ny = norm.getY(i);
+      const nz = norm.getZ(i);
+      assert.ok(
+        Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz),
+        `${label}: vertex ${i} has non-finite normal (${nx}, ${ny}, ${nz})`,
+      );
+      const len = Math.hypot(nx, ny, nz);
+      assert.ok(
+        len > 1e-4,
+        `${label}: vertex ${i} has degenerate zero-length normal (${nx}, ${ny}, ${nz})`,
+      );
+    }
+  }
+}
+
+test('all vehicle, character, and city geometries have strictly finite non-zero vertex normals (prevents PBR NaN -> bloom blackout)', () => {
+  const mockTextures = createMockTextures();
+
+  // 1. Traffic Sedan & VCPD Interceptor (direct regression check for lofted hood/nose vertex 2807)
+  const auditGeometryBundle = (bundle: unknown, label: string): void => {
+    if (bundle instanceof THREE.BufferGeometry) {
+      assertValidGeometryNormals(bundle, label);
+      bundle.dispose();
+      return;
+    }
+    if (bundle && typeof bundle === 'object') {
+      for (const [k, v] of Object.entries(bundle as Record<string, unknown>)) {
+        auditGeometryBundle(v, `${label}.${k}`);
+      }
+    }
+  };
+
+  const trafficBundles: Array<[string, unknown]> = [
+    ['traffic_body', buildTrafficBodyShellGeometry()],
+    ['traffic_roof', buildTrafficRoofGeometry()],
+    ['traffic_pillars', buildTrafficPillarsGeometry()],
+    ['traffic_glass', buildTrafficGlassGeometry()],
+    ['traffic_front', buildTrafficFrontFasciaGeometry()],
+    ['traffic_rear', buildTrafficRearFasciaGeometry()],
+    ['traffic_interior', buildTrafficInteriorGeometry()],
+    ['traffic_details', buildTrafficExteriorDetailsGeometry()],
+    ['vcpd_body', buildVcpdBodyShellGeometry()],
+    ['vcpd_roof', buildVcpdRoofGeometry()],
+    ['vcpd_pillars', buildVcpdPillarsGeometry()],
+    ['vcpd_glass', buildVcpdGlassGeometry()],
+    ['vcpd_front', buildVcpdFrontFasciaGeometry()],
+    ['vcpd_rear', buildVcpdRearFasciaGeometry()],
+    ['vcpd_interior', buildVcpdInteriorGeometry()],
+    ['vcpd_details', buildVcpdExteriorDetailsGeometry()],
+    ['vcpd_lightbar', buildVcpdLightbarGeometry()],
+  ];
+  for (const [label, bundle] of trafficBundles) {
+    auditGeometryBundle(bundle, label);
+  }
+
+  // 2. All drivable vehicles via createVehicleMesh
+  for (const spec of Object.values(VEHICLE_CATALOG)) {
+    const rig = createVehicleMesh(spec, mockTextures.contactShadowMap);
+    rig.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.BufferGeometry) {
+        assertValidGeometryNormals(obj.geometry, `vehicle:${spec.id}:${obj.name || 'mesh'}`);
+      }
+    });
+    rig.dispose();
+  }
+  disposeSharedVehicleResources();
+
+  // 3. Player & Pedestrians
+  const playerRig = createPlayerCharacterRig(mockTextures.contactShadowMap);
+  playerRig.root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.BufferGeometry) {
+      assertValidGeometryNormals(obj.geometry, `player:${obj.name || 'mesh'}`);
+    }
+  });
+  playerRig.dispose();
+
+  const pedGeos = createPedestrianSharedGeometries();
+  for (const [k, g] of Object.entries(pedGeos)) {
+    if (g instanceof THREE.BufferGeometry) {
+      assertValidGeometryNormals(g, `ped:${k}`);
+      g.dispose();
+    }
+  }
+
+  // 4. Full CityWorld (all 5 districts including Phase 2D-1/2D-2/2D-3 + ocean)
+  const layout = generateCityLayout();
+  const world = buildCityWorld(layout, mockTextures);
+  world.root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.BufferGeometry) {
+      assertValidGeometryNormals(obj.geometry, `world:${obj.name || 'mesh'}`);
+    }
+  });
+  world.dispose();
+});
+
+test('DynamicEnvironmentSystem restores full WebGLRenderer state on PMREM success/error, preserves last valid RT on failure, and skips on context loss', () => {
+  let activeTarget: THREE.WebGLRenderTarget | null = null;
+  let activeCubeFace = 0;
+  let activeMipLevel = 0;
+  const viewport = new THREE.Vector4(0, 0, 1318, 710);
+  const scissor = new THREE.Vector4(0, 0, 1318, 710);
+  let scissorTest = false;
+  const clearColor = new THREE.Color(0x112233);
+  let clearAlpha = 0.75;
+  let contextLost = false;
+  const callLog: string[] = [];
+
+  const mockRenderer = {
+    autoClear: true,
+    autoClearColor: true,
+    autoClearDepth: true,
+    autoClearStencil: true,
+    getContext: () => ({ isContextLost: () => contextLost }),
+    getRenderTarget: () => activeTarget,
+    getActiveCubeFace: () => activeCubeFace,
+    getActiveMipmapLevel: () => activeMipLevel,
+    setRenderTarget: (rt: THREE.WebGLRenderTarget | null, face = 0, mip = 0) => {
+      activeTarget = rt;
+      activeCubeFace = face;
+      activeMipLevel = mip;
+      callLog.push(`setRenderTarget:${rt ? 'rt' : 'null'}:${face}:${mip}`);
+    },
+    getViewport: (target: THREE.Vector4) => target.copy(viewport),
+    setViewport: (v: THREE.Vector4) => {
+      viewport.copy(v);
+      callLog.push(`setViewport:${v.x},${v.y},${v.z},${v.w}`);
+    },
+    getScissor: (target: THREE.Vector4) => target.copy(scissor),
+    setScissor: (v: THREE.Vector4) => {
+      scissor.copy(v);
+      callLog.push(`setScissor:${v.x},${v.y},${v.z},${v.w}`);
+    },
+    getScissorTest: () => scissorTest,
+    setScissorTest: (enable: boolean) => {
+      scissorTest = enable;
+      callLog.push(`setScissorTest:${enable}`);
+    },
+    getClearColor: (target: THREE.Color) => target.copy(clearColor),
+    getClearAlpha: () => clearAlpha,
+    setClearColor: (c: THREE.Color, a = 1) => {
+      clearColor.copy(c);
+      clearAlpha = a;
+      callLog.push(`setClearColor:${c.getHexString()}:${a}`);
+    },
+  } as unknown as THREE.WebGLRenderer;
+
+  let shouldThrow = false;
+  let rtSeq = 0;
+  const disposedIds: string[] = [];
+
+  const makeMockRT = (id: string): THREE.WebGLRenderTarget => {
+    const tex = new THREE.Texture();
+    tex.name = `env_tex_${id}`;
+    return {
+      texture: tex,
+      dispose: () => {
+        callLog.push(`dispose:${id}`);
+        disposedIds.push(id);
+      },
+    } as unknown as THREE.WebGLRenderTarget;
+  };
+
+  const mockPmrem: PmremGeneratorLike = {
+    compileCubemapShader: () => {},
+    fromScene: () => {
+      // Simulate PMREM mutating WebGLRenderer state mid-flight
+      mockRenderer.autoClear = false;
+      mockRenderer.autoClearColor = false;
+      mockRenderer.setRenderTarget(makeMockRT('temp_cube'), 3, 2);
+      mockRenderer.setViewport(new THREE.Vector4(0, 0, 256, 256));
+      mockRenderer.setScissor(new THREE.Vector4(10, 10, 64, 64));
+      mockRenderer.setScissorTest(true);
+      mockRenderer.setClearColor(new THREE.Color(0x000000), 0);
+      if (shouldThrow) {
+        throw new Error('simulated_pmrem_failure');
+      }
+      rtSeq += 1;
+      return makeMockRT(`env_${rtSeq}`);
+    },
+    dispose: () => {},
+  };
+
+  const makeSnapshot = (nightFactor: number): EnvironmentAtmosphereSnapshot => ({
+    timeHours: nightFactor > 0.5 ? 22.5 : 17.4,
+    sunDir: { x: -0.8, y: 0.4, z: -0.4 },
+    moonDir: { x: 0.5, y: 0.3, z: -0.8 },
+    skyTop: { r: 0.15, g: 0.31, b: 0.52 },
+    skyMid: { r: 0.45, g: 0.56, b: 0.7 },
+    skyHorizon: { r: 0.87, g: 0.7, b: 0.58 },
+    sunColor: { r: 1.0, g: 0.74, b: 0.44 },
+    moonColor: { r: 0.61, g: 0.75, b: 0.96 },
+    hemiGround: { r: 0.33, g: 0.29, b: 0.28 },
+    nightFactor,
+    cloudCoverage: 0.25,
+    stormDarkness: 0.0,
+    rainAmount: 0.0,
+  });
+
+  const scene = new THREE.Scene();
+  const envSystem = new DynamicEnvironmentSystem(
+    mockRenderer,
+    scene,
+    GraphicsQuality.High,
+    false,
+    mockPmrem,
+  );
+
+  // 1. Initial refresh succeeds and restores every renderer state field cleanly
+  assert.equal(envSystem.update(0.016, makeSnapshot(0.18), true), true);
+  assert.equal(activeTarget, null);
+  assert.equal(activeCubeFace, 0);
+  assert.equal(activeMipLevel, 0);
+  assert.deepEqual(viewport.toArray(), [0, 0, 1318, 710]);
+  assert.deepEqual(scissor.toArray(), [0, 0, 1318, 710]);
+  assert.equal(scissorTest, false);
+  assert.equal(mockRenderer.autoClear, true);
+  assert.equal(mockRenderer.autoClearColor, true);
+  assert.equal(clearColor.getHex(), 0x112233);
+  assert.equal(clearAlpha, 0.75);
+  assert.equal(scene.environment?.name, 'env_tex_env_1');
+
+  // 2. Subsequent refresh disposes old RT strictly AFTER renderer state restoration
+  callLog.length = 0;
+  assert.equal(envSystem.update(0.016, makeSnapshot(0.95), true), true);
+  assert.equal(scene.environment?.name, 'env_tex_env_2');
+  assert.deepEqual(disposedIds, ['env_1']);
+  const restoreIdx = callLog.lastIndexOf('setScissorTest:false');
+  const disposeIdx = callLog.indexOf('dispose:env_1');
+  assert.ok(restoreIdx >= 0 && disposeIdx > restoreIdx, 'old RT must be disposed AFTER state restore');
+
+  // 3. Failed refresh restores full renderer state AND preserves previous valid RT without disposing it
+  shouldThrow = true;
+  assert.equal(envSystem.update(0.016, makeSnapshot(0.1), true), false);
+  assert.equal(activeTarget, null);
+  assert.deepEqual(viewport.toArray(), [0, 0, 1318, 710]);
+  assert.equal(scissorTest, false);
+  assert.equal(mockRenderer.autoClear, true);
+  assert.equal(clearColor.getHex(), 0x112233);
+  assert.equal(clearAlpha, 0.75);
+  assert.equal(scene.environment?.name, 'env_tex_env_2', 'previous valid environment must remain bound on error');
+  assert.deepEqual(disposedIds, ['env_1'], 'previous valid RT must NOT be disposed on failure');
+  const errStats = envSystem.getStats();
+  assert.equal(errStats.failedRefreshCount, 1);
+  assert.equal(errStats.lastRefreshSuccess, false);
+  assert.equal(errStats.lastError, 'simulated_pmrem_failure');
+
+  // 4. Context loss skips PMREM cleanly
+  shouldThrow = false;
+  contextLost = true;
+  assert.equal(envSystem.update(0.016, makeSnapshot(0.5), true), false);
+  assert.equal(envSystem.getStats().contextLostSkips, 1);
+  assert.equal(scene.environment?.name, 'env_tex_env_2');
+
+  envSystem.dispose();
+  assert.equal(scene.environment, null);
+});
+
+test('CinematicPostPipeline & shader firewalls guard against NaN/Infinity, unsafe pow/atan, and WebGL context loss', () => {
+  // 1. Verify shader firewalls exist in bloom high-pass, grade pass, and env dome
+  assert.ok(
+    HARDENED_BLOOM_HIGHPASS_FRAGMENT_SHADER.includes('sanitizeHdrColor'),
+    'UnrealBloomPass high-pass shader must sanitize NaN/Infinity before 5-mip Gaussian blur',
+  );
+  assert.ok(
+    CinematicGradeShader.fragmentShader.includes('sanitizeHdrColor'),
+    'CinematicGradeShader must sanitize HDR buffer samples',
+  );
+  assert.equal(
+    ENV_DOME_FRAGMENT_SHADER.includes('pow((y -'),
+    false,
+    'ENV_DOME_FRAGMENT_SHADER must not pass negative bases into GLSL pow()',
+  );
+  assert.ok(
+    ENV_DOME_FRAGMENT_SHADER.includes('length(dir.xz) > 1e-4 ? atan(dir.z, dir.x) : 0.0'),
+    'ENV_DOME_FRAGMENT_SHADER must guard atan(0, 0) at cubemap poles',
+  );
+
+  // 2. Verify CinematicPostPipeline context-loss skip and state-preserving direct fallback
+  let contextLost = false;
+  let directRenderCalls = 0;
+  let scissorTest = false;
+  let activeTarget: THREE.WebGLRenderTarget | null = null;
+  const clearColor = new THREE.Color(0x0a0b0c);
+  let clearAlpha = 1;
+
+  const mockRenderer = {
+    autoClear: true,
+    toneMappingExposure: 1.0,
+    getContext: () => ({ isContextLost: () => contextLost }),
+    getSize: (t: THREE.Vector2) => t.set(1318, 710),
+    getPixelRatio: () => 1,
+    getScissorTest: () => scissorTest,
+    setScissorTest: (v: boolean) => {
+      scissorTest = v;
+    },
+    getClearColor: (t: THREE.Color) => t.copy(clearColor),
+    getClearAlpha: () => clearAlpha,
+    setClearColor: (c: THREE.Color, a = 1) => {
+      clearColor.copy(c);
+      clearAlpha = a;
+    },
+    setRenderTarget: (rt: THREE.WebGLRenderTarget | null) => {
+      activeTarget = rt;
+    },
+    render: () => {
+      directRenderCalls += 1;
+    },
+  } as unknown as THREE.WebGLRenderer;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 1318 / 710, 0.1, 1000);
+  const pipeline = new CinematicPostPipeline(
+    mockRenderer,
+    scene,
+    camera,
+    false,
+    GraphicsQuality.Low,
+  );
+
+  // Normal Low-quality direct render
+  pipeline.render(0.016);
+  assert.equal(directRenderCalls, 1);
+  assert.equal(activeTarget, null);
+  assert.equal(scissorTest, false);
+  assert.equal(pipeline.getDiagnostics().fallbackRenderCount, 1);
+
+  // Context-lost frame must skip cleanly without issuing renderer.render
+  contextLost = true;
+  pipeline.render(0.016);
+  assert.equal(directRenderCalls, 1);
+  assert.equal(pipeline.getDiagnostics().contextLostSkips, 1);
+
+  // Context restored resumes rendering cleanly
+  contextLost = false;
+  pipeline.handleContextRestored();
+  pipeline.render(0.016);
+  assert.equal(directRenderCalls, 2);
+
+  pipeline.dispose();
+});
+
+
 
 
 

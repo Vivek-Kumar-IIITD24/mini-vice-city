@@ -289,10 +289,67 @@ export function computeCinematicPostState(
 }
 
 /**
+ * GLSL ES 1.00-compatible HDR finite sanitizer.
+ * Rejects NaN, +/-Infinity, and negative radiance while clamping extreme HDR spikes
+ * so a single malformed pixel can never poison multi-mip UnrealBloomPass or tone mapping.
+ */
+export const GLSL_SANITIZE_HDR_HELPERS = /* glsl */ `
+float sanitizeHdrChannel(float v) {
+  return (v >= 0.0 && v <= 65000.0) ? min(v, 32.0) : 0.0;
+}
+
+vec3 sanitizeHdrColor(vec3 c) {
+  return vec3(
+    sanitizeHdrChannel(c.r),
+    sanitizeHdrChannel(c.g),
+    sanitizeHdrChannel(c.b)
+  );
+}
+`;
+
+export const HARDENED_BLOOM_HIGHPASS_FRAGMENT_SHADER = /* glsl */ `
+uniform sampler2D tDiffuse;
+uniform vec3 defaultColor;
+uniform float defaultOpacity;
+uniform float luminosityThreshold;
+uniform float smoothWidth;
+
+varying vec2 vUv;
+
+${GLSL_SANITIZE_HDR_HELPERS}
+
+void main() {
+  vec4 texel = texture2D(tDiffuse, vUv);
+  texel.rgb = sanitizeHdrColor(texel.rgb);
+  texel.a = (texel.a >= 0.0 && texel.a <= 1.0) ? texel.a : 1.0;
+
+  float v = luminance(texel.xyz);
+  vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
+  float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
+
+  gl_FragColor = mix(outputColor, texel, alpha);
+}
+`;
+
+export interface PostPipelineDiagnostics {
+  quality: GraphicsQuality;
+  isSoftwareGl: boolean;
+  composerActive: boolean;
+  composerFailed: boolean;
+  bloomEnabled: boolean;
+  bloomFirewallActive: boolean;
+  renderCount: number;
+  fallbackRenderCount: number;
+  contextLostSkips: number;
+  lastRenderError: string | null;
+  lastFrameRenderMs: number;
+}
+
+/**
  * Custom linear-HDR cinematic colour-grading shader executed right before OutputPass.
- * Performs soft highlight shoulder compression, split-toned shadow/highlight balance,
- * subtle warmth shift, contrast around mid-grey, saturation control, smooth vignette,
- * and ultra-fine animated luminance grain.
+ * Performs NaN/Infinity sanitization, soft highlight shoulder compression, split-toned
+ * shadow/highlight balance, subtle warmth shift, contrast around mid-grey, saturation
+ * control, smooth vignette, and ultra-fine animated luminance grain.
  */
 export const CinematicGradeShader = {
   name: 'CinematicGradeShader',
@@ -334,6 +391,8 @@ export const CinematicGradeShader = {
     uniform float uLightweightBloomStrength;
     varying vec2 vUv;
 
+    ${GLSL_SANITIZE_HDR_HELPERS}
+
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
       p3 += dot(p3, p3.yzx + 33.33);
@@ -342,7 +401,8 @@ export const CinematicGradeShader = {
 
     void main() {
       vec4 texel = texture2D(tDiffuse, vUv);
-      vec3 col = max(texel.rgb, vec3(0.0));
+      vec3 col = sanitizeHdrColor(texel.rgb);
+      float safeAlpha = (texel.a >= 0.0 && texel.a <= 1.0) ? texel.a : 1.0;
 
       // Lightweight single-pass selective HDR bloom halo when multi-pass UnrealBloomPass is bypassed on Software WebGL
       if (uLightweightBloomStrength > 0.001) {
@@ -359,7 +419,7 @@ export const CinematicGradeShader = {
         offsets[6] = vec2(step2.x, -step2.y);
         offsets[7] = vec2(-step2.x, -step2.y);
         for (int i = 0; i < 8; i++) {
-          vec3 s = max(texture2D(tDiffuse, vUv + offsets[i]).rgb, vec3(0.0));
+          vec3 s = sanitizeHdrColor(texture2D(tDiffuse, vUv + offsets[i]).rgb);
           float sLuma = dot(s, vec3(0.2126, 0.7152, 0.0722));
           float excess = max(0.0, sLuma - uBloomThreshold);
           float w = excess / (sLuma + 0.001);
@@ -411,9 +471,9 @@ export const CinematicGradeShader = {
       // Very fine film grain (stronger in midtones, restrained in bright highlights)
       float noise = (hash12(vUv * 1280.0 + vec2(uTime * 17.3, uTime * 29.7)) - 0.5) * 2.0;
       float grainMask = smoothstep(0.01, 0.25, newLuma) * (1.0 - smoothstep(0.75, 1.5, newLuma));
-      col = max(col + vec3(noise * uGrainStrength * (0.4 + 0.6 * grainMask)), vec3(0.0));
+      col = sanitizeHdrColor(col + vec3(noise * uGrainStrength * (0.4 + 0.6 * grainMask)));
 
-      gl_FragColor = vec4(col, texel.a);
+      gl_FragColor = vec4(col, safeAlpha);
     }
   `,
 };
@@ -427,6 +487,7 @@ export class CinematicPostPipeline {
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly isSoftwareGl: boolean;
+  private readonly tmpClearColor = new THREE.Color();
 
   private composer: EffectComposer | null = null;
   private renderPass: RenderPass | null = null;
@@ -443,6 +504,14 @@ export class CinematicPostPipeline {
   private elapsedTime = 0;
   private currentExposure: number | null = null;
   private composerFailed = false;
+  private bloomFirewallActive = false;
+
+  // Lightweight diagnostics
+  private renderCount = 0;
+  private fallbackRenderCount = 0;
+  private contextLostSkips = 0;
+  private lastRenderError: string | null = null;
+  private lastFrameRenderMs = 0;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -484,6 +553,15 @@ export class CinematicPostPipeline {
     return this.isSoftwareGl ? Math.min(this.pixelRatio, 0.5) : this.pixelRatio;
   }
 
+  private isRendererContextLost(): boolean {
+    try {
+      const gl = this.renderer.getContext?.();
+      return Boolean(gl && typeof gl.isContextLost === 'function' && gl.isContextLost());
+    } catch {
+      return false;
+    }
+  }
+
   private initComposer(): void {
     if (this.composer || this.composerFailed) return;
     try {
@@ -496,6 +574,7 @@ export class CinematicPostPipeline {
       composer.addPass(renderPass);
 
       let bloomPass: UnrealBloomPass | null = null;
+      let bloomFirewallActive = false;
       if (!this.isSoftwareGl) {
         const bloomScale = Math.max(0.25, this.config.bloomResolutionScale || 0.5);
         const bloomRes = new THREE.Vector2(
@@ -508,6 +587,14 @@ export class CinematicPostPipeline {
           this.lastState.bloomRadius,
           this.lastState.bloomThreshold
         );
+        // Install GLSL NaN/Infinity firewall in the high-pass filter BEFORE multi-mip blur runs.
+        // Without this, a single NaN pixel in the HalfFloat scene buffer expands across all 5 mip
+        // levels and turns the entire 3D frame solid black for 1 frame.
+        if (bloomPass.materialHighPassFilter) {
+          bloomPass.materialHighPassFilter.fragmentShader = HARDENED_BLOOM_HIGHPASS_FRAGMENT_SHADER;
+          bloomPass.materialHighPassFilter.needsUpdate = true;
+          bloomFirewallActive = true;
+        }
         bloomPass.enabled = this.config.bloomEnabled;
         composer.addPass(bloomPass);
       }
@@ -524,9 +611,12 @@ export class CinematicPostPipeline {
       this.bloomPass = bloomPass;
       this.gradePass = gradePass;
       this.outputPass = outputPass;
+      this.bloomFirewallActive = bloomFirewallActive;
     } catch (err) {
+      this.lastRenderError = err instanceof Error ? err.message : String(err);
       console.warn('CinematicPostPipeline fallback to direct WebGLRenderer:', err);
       this.composerFailed = true;
+      this.bloomFirewallActive = false;
       this.disposeComposerOnly();
     }
   }
@@ -587,6 +677,15 @@ export class CinematicPostPipeline {
         Math.max(64, Math.floor(w * effPr * bloomScale)),
         Math.max(64, Math.floor(h * effPr * bloomScale))
       );
+    }
+  }
+
+  public handleContextRestored(): void {
+    this.composerFailed = false;
+    this.lastRenderError = null;
+    this.disposeComposerOnly();
+    if (this.config.enabled) {
+      this.initComposer();
     }
   }
 
@@ -656,16 +755,68 @@ export class CinematicPostPipeline {
   }
 
   public render(dt = 0.016): void {
-    if (this.config.enabled && this.composer && !this.composerFailed) {
-      try {
-        this.composer.render(dt);
-        return;
-      } catch (err) {
-        console.warn('EffectComposer render error, falling back to direct render:', err);
-        this.composerFailed = true;
+    if (this.isRendererContextLost()) {
+      this.contextLostSkips += 1;
+      return;
+    }
+
+    const startMs = typeof performance !== 'undefined' ? performance.now() : 0;
+    const prevAutoClear = this.renderer.autoClear;
+    const prevScissorTest =
+      typeof this.renderer.getScissorTest === 'function' ? this.renderer.getScissorTest() : false;
+    if (typeof this.renderer.getClearColor === 'function') {
+      this.renderer.getClearColor(this.tmpClearColor);
+    }
+    const prevClearAlpha =
+      typeof this.renderer.getClearAlpha === 'function' ? this.renderer.getClearAlpha() : 1;
+
+    try {
+      if (this.config.enabled && this.composer && !this.composerFailed) {
+        try {
+          this.composer.renderToScreen = true;
+          if (this.outputPass) {
+            this.outputPass.enabled = true;
+          }
+          if (typeof this.renderer.setScissorTest === 'function') {
+            this.renderer.setScissorTest(false);
+          }
+          if (typeof this.renderer.setRenderTarget === 'function') {
+            this.renderer.setRenderTarget(null);
+          }
+          this.composer.render(dt);
+          this.renderCount += 1;
+          return;
+        } catch (err) {
+          this.lastRenderError = err instanceof Error ? err.message : String(err);
+          console.warn('EffectComposer render error, falling back to direct render:', err);
+          this.composerFailed = true;
+        }
+      }
+
+      if (typeof this.renderer.setRenderTarget === 'function') {
+        this.renderer.setRenderTarget(null);
+      }
+      if (typeof this.renderer.setScissorTest === 'function') {
+        this.renderer.setScissorTest(false);
+      }
+      this.renderer.autoClear = true;
+      this.renderer.render(this.scene, this.camera);
+      this.fallbackRenderCount += 1;
+    } finally {
+      if (typeof this.renderer.setRenderTarget === 'function') {
+        this.renderer.setRenderTarget(null);
+      }
+      this.renderer.autoClear = prevAutoClear;
+      if (typeof this.renderer.setScissorTest === 'function') {
+        this.renderer.setScissorTest(prevScissorTest);
+      }
+      if (typeof this.renderer.setClearColor === 'function') {
+        this.renderer.setClearColor(this.tmpClearColor, prevClearAlpha);
+      }
+      if (typeof performance !== 'undefined') {
+        this.lastFrameRenderMs = Math.max(0, performance.now() - startMs);
       }
     }
-    this.renderer.render(this.scene, this.camera);
   }
 
   public getState(): CinematicPostState {
@@ -678,6 +829,22 @@ export class CinematicPostPipeline {
 
   public isComposerActive(): boolean {
     return Boolean(this.config.enabled && this.composer && !this.composerFailed);
+  }
+
+  public getDiagnostics(): PostPipelineDiagnostics {
+    return {
+      quality: this.quality,
+      isSoftwareGl: this.isSoftwareGl,
+      composerActive: this.isComposerActive(),
+      composerFailed: this.composerFailed,
+      bloomEnabled: Boolean(this.bloomPass?.enabled),
+      bloomFirewallActive: this.bloomFirewallActive,
+      renderCount: this.renderCount,
+      fallbackRenderCount: this.fallbackRenderCount,
+      contextLostSkips: this.contextLostSkips,
+      lastRenderError: this.lastRenderError,
+      lastFrameRenderMs: this.lastFrameRenderMs,
+    };
   }
 
   private disposeComposerOnly(): void {
@@ -698,6 +865,7 @@ export class CinematicPostPipeline {
       this.composer = null;
     }
     this.renderPass = null;
+    this.bloomFirewallActive = false;
   }
 
   public dispose(): void {
