@@ -46,6 +46,14 @@ import {
   createUpgradedTrafficSignalAssets,
   StreetscapeStats,
 } from './streetscapeAssets';
+import {
+  buildHarbourEnvironmentAssets,
+  HarbourEnvironmentStats,
+} from './harbourEnvironmentAssets';
+import {
+  buildDistrictOutdoorAssets,
+  DistrictOutdoorStats,
+} from './districtOutdoorAssets';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -92,6 +100,8 @@ export interface BuiltCityWorld {
   palmTreeAssetsStats: PalmTreeAssetsStats;
   coastalShorelineStats: CoastalShorelineStats;
   streetscapeStats: StreetscapeStats;
+  harbourEnvironmentStats: HarbourEnvironmentStats;
+  districtOutdoorStats: DistrictOutdoorStats;
   dispose: () => void;
 }
 
@@ -1131,6 +1141,27 @@ export function buildCityWorld(
     });
   }
 
+  // -------------------------------------------------------
+  // 8. PHASE 2E-4: INDUSTRIAL HARBOUR ENVIRONMENT, MARINA VESSELS & DISTRICT OUTDOOR DECORATIONS
+  // -------------------------------------------------------
+  const harbourEnvironmentStats = buildHarbourEnvironmentAssets({
+    root,
+    layout,
+    disposables,
+    oceanTimeUniform: oceanUniforms.uTime,
+    stormDarknessUniform: oceanUniforms.uStormDarkness,
+    nightFactorUniform: oceanUniforms.uNightFactor,
+    maxAnisotropy: textures.warehouseMap.anisotropy || 4,
+  });
+
+  const districtOutdoorStats = buildDistrictOutdoorAssets({
+    root,
+    layout,
+    disposables,
+    extraExclusions: harbourEnvironmentStats.propFootprints,
+    maxAnisotropy: textures.sidewalkMap.anisotropy || 4,
+  });
+
   return {
     root,
     roadMaterial,
@@ -1153,6 +1184,8 @@ export function buildCityWorld(
     palmTreeAssetsStats,
     coastalShorelineStats,
     streetscapeStats,
+    harbourEnvironmentStats,
+    districtOutdoorStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

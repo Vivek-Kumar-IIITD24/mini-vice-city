@@ -223,6 +223,30 @@ import {
   isPointInDrivingRoad,
   isPointInProtectedRoadOrCrosswalk,
 } from '../world/streetscapeAssets';
+import {
+  HARBOUR_CRANE_FOOTPRINTS,
+  MARINA_PIER_CLEAT_ANCHORS,
+  OCEAN_MEAN_WATER_Y,
+  createCableReelGeometry,
+  createCargoRackGeometry,
+  createCatenaryRopeGeometry,
+  createLifeRingPedestalParts,
+  createNavigationBuoyGeometry,
+  createShippingPalletGeometry,
+  createWatercraftHullGeometry,
+  createWoodenCrateGeometry,
+  evaluateBuoyantWaterlineY,
+  evaluateOceanWaterY,
+  sampleCatenaryPoint,
+} from '../world/harbourEnvironmentAssets';
+import {
+  createArchitecturalPlanterGeometry,
+  createDowntownPlazaSculptureParts,
+  createNeonLoungeScreenParts,
+  createPatioUmbrellaTableParts,
+  createTropicalShrubGeometry,
+  createVelvetQueueStanchionParts,
+} from '../world/districtOutdoorAssets';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -5365,6 +5389,264 @@ test('Phase 2E-3: BuiltCityWorld integrates raised 9-block sidewalks, curb ramps
   assert.doesNotThrow(() => worldA.dispose(), 'worldA.dispose() must cleanly release all streetscape GPU resources');
   assert.doesNotThrow(() => worldB.dispose(), 'worldB.dispose() must cleanly release all streetscape GPU resources');
 });
+
+test('Phase 2E-4: Harbour, Marina watercraft, mooring catenary & District outdoor geometries and wave math have finite vertices and valid unit normals', () => {
+  // 1. Ocean wave & buoyancy helpers match expected coastal elevation & storm heave range
+  const calmY = evaluateOceanWaterY(161.4, 84.6, 0, 0);
+  const laterY = evaluateOceanWaterY(161.4, 84.6, 1.8, 0);
+  const buoyantY = evaluateBuoyantWaterlineY(161.4, 84.6, 0, 0);
+  assert.ok(Math.abs(calmY - OCEAN_MEAN_WATER_Y) <= 0.55);
+  assert.notEqual(calmY, laterY, 'Ocean wave height must evolve over time');
+  assert.ok(Math.abs(buoyantY - OCEAN_MEAN_WATER_Y) <= Math.abs(calmY - OCEAN_MEAN_WATER_Y) + 1e-6);
+
+  // 2. Catenary rope sampler stays exact at endpoints and sags smoothly downward at t=0.5
+  const startPt = { x: 152.2, y: 0.49, z: 90.58 };
+  const endPt = { x: 156.4, y: 0.25, z: 86.2 };
+  const p0 = sampleCatenaryPoint(startPt, endPt, 0, 0.34);
+  const pMid = sampleCatenaryPoint(startPt, endPt, 0.5, 0.34);
+  const p1 = sampleCatenaryPoint(startPt, endPt, 1, 0.34);
+  assert.ok(Math.hypot(p0.x - startPt.x, p0.y - startPt.y, p0.z - startPt.z) < 1e-6);
+  assert.ok(Math.hypot(p1.x - endPt.x, p1.y - endPt.y, p1.z - endPt.z) < 1e-6);
+  const straightMidY = (startPt.y + endPt.y) * 0.5;
+  assert.ok(Math.abs(pMid.y - (straightMidY - 0.34)) < 1e-6, 'Catenary midpoint must sag by exact sagMeters');
+
+  // 3. Validate all Phase 2E-4 custom BufferGeometries (finite positions, bounds, outward unit normals)
+  const hullGeo = createWatercraftHullGeometry(12.2, 3.5, 0.92, 0.98);
+  const palletGeo = createShippingPalletGeometry();
+  const crateGeo = createWoodenCrateGeometry();
+  const reel = createCableReelGeometry();
+  const rackGeo = createCargoRackGeometry();
+  const ropeGeo = createCatenaryRopeGeometry(startPt, endPt, 0.34);
+  const buoy = createNavigationBuoyGeometry();
+  const lifeRing = createLifeRingPedestalParts();
+  const planterGeo = createArchitecturalPlanterGeometry();
+  const shrubGeo = createTropicalShrubGeometry();
+  const dtSculpture = createDowntownPlazaSculptureParts();
+  const patio = createPatioUmbrellaTableParts();
+  const stanchion = createVelvetQueueStanchionParts();
+  const loungeScreen = createNeonLoungeScreenParts();
+
+  const geos: Array<[string, THREE.BufferGeometry]> = [
+    ['watercraftHull', hullGeo],
+    ['shippingPallet', palletGeo],
+    ['woodenCrate', crateGeo],
+    ['cableReelFlange', reel.flangeGeo],
+    ['cableReelCore', reel.coreGeo],
+    ['cargoRack', rackGeo],
+    ['catenaryRope', ropeGeo],
+    ['navigationBuoyBody', buoy.bodyGeo],
+    ['navigationBuoyBeacon', buoy.beaconGeo],
+    ['lifeRingPost', lifeRing.postGeo],
+    ['lifeRingTorus', lifeRing.ringGeo],
+    ['architecturalPlanter', planterGeo],
+    ['tropicalShrub', shrubGeo],
+    ['downtownPlazaPlinth', dtSculpture.plinthGeo],
+    ['downtownPlazaMetal', dtSculpture.metalFinGeo],
+    ['patioTable', patio.furnitureGeo],
+    ['patioCanopy', patio.canopyGeo],
+    ['stanchionPosts', stanchion.postGeo],
+    ['stanchionRope', stanchion.ropeGeo],
+    ['loungeScreenFrame', loungeScreen.frameGeo],
+    ['loungeScreenGlow', loungeScreen.glowStripGeo],
+  ];
+
+  for (const [name, geo] of geos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 12, `${name} must have geometry vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have matching normals`);
+    assert.ok(geo.boundingBox && geo.boundingSphere && Number.isFinite(geo.boundingSphere.radius), `${name} must have computed bounds`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(Number.isFinite(len) && len >= 0.85 && len <= 1.15, `${name} normal ${i} must be unit-length, got ${len}`);
+    }
+    geo.dispose();
+  }
+});
+
+test('Phase 2E-4: BuiltCityWorld integrates Harbour cargo/machinery, moored Marina watercraft, buoys, 5-district outdoor props deterministically without obstructing prior assets', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const worldA = buildCityWorld(layout, mockTextures);
+  const worldB = buildCityWorld(layout, mockTextures);
+
+  const hStats = worldA.harbourEnvironmentStats;
+  const dStats = worldA.districtOutdoorStats;
+
+  // 1. Harbour props, static machinery, dock equipment, moored vessels, ropes, buoys & safety props present & deterministic
+  assert.ok(hStats.harbourPropCount >= 14, `Expected >= 14 Harbour yard prop clusters, got ${hStats.harbourPropCount}`);
+  assert.equal(hStats.harbourMachineryCount, 2, 'Expected 2 static Harbour yard vehicles (forklift + pallet tug)');
+  assert.ok(hStats.harbourDockEquipmentCount >= 14, `Expected >= 14 dock equipment/rack stations, got ${hStats.harbourDockEquipmentCount}`);
+  assert.equal(hStats.marinaVesselCount, 3, 'Expected 3 moored Marina watercraft');
+  assert.equal(hStats.mooringRopeCount, 5, 'Expected 5 sagging catenary mooring lines');
+  assert.equal(hStats.navigationBuoyCount, 4, 'Expected 4 floating marine navigation/mooring buoys');
+  assert.equal(hStats.marinaSafetyPropCount, 4, 'Expected 3 life-ring pedestals + 1 slip sign on Marina Pier');
+
+  assert.deepEqual(hStats.vessels, worldB.harbourEnvironmentStats.vessels, 'Marina vessel placements must be deterministic');
+  assert.deepEqual(hStats.propFootprints, worldB.harbourEnvironmentStats.propFootprints, 'Harbour prop footprints must be deterministic');
+  assert.deepEqual(dStats.placedProps, worldB.districtOutdoorStats.placedProps, 'District outdoor props must be deterministic');
+
+  // 2. Verify all 3 moored watercraft sit cleanly in open Atlantic water offshore of beach/boardwalk/pier & lifeguard towers
+  const expectedVesselIds = ['marina_vessel_cruiser', 'marina_vessel_center_console', 'marina_vessel_service_launch'];
+  for (const vid of expectedVesselIds) {
+    const obj = worldA.root.getObjectByName(vid);
+    assert.ok(obj instanceof THREE.Group, `${vid} must be mounted in scene`);
+    const summary = hStats.vessels.find((v) => v.id === vid)!;
+    assert.ok(summary, `${vid} summary must be present`);
+    assert.ok(summary.shoreClearance >= 2.0, `${vid} must sit cleanly offshore of shoreline contour, got ${summary.shoreClearance}`);
+    assert.ok(summary.pierClearance >= 1.5, `${vid} must stay clear of Marina Pier deck, got ${summary.pierClearance}`);
+    assert.ok(summary.x - summary.length * 0.5 > 152, `${vid} stern must stay east of beach & shoreline`);
+    // Clear of lifeguard towers at (130, ±36)
+    for (const lz of [-36, 36]) {
+      assert.ok(Math.hypot(summary.x - 130, summary.z - lz) > 25, `${vid} must stay well clear of lifeguard tower`);
+    }
+  }
+
+  // Verify pier cleats referenced by ropes match real pier anchors & rope meshes exist
+  assert.ok(MARINA_PIER_CLEAT_ANCHORS.northEast.x === 152.2 && MARINA_PIER_CLEAT_ANCHORS.southEast.x === 152.2);
+  let foundRopes = 0;
+  worldA.root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.name.includes('_mooring_rope_')) {
+      foundRopes++;
+    }
+  });
+  assert.equal(foundRopes, 5, 'All 5 mooring catenary rope meshes must be mounted');
+
+  // 3. Verify floating buoys stay strictly offshore in open Atlantic water (x >= 166)
+  const buoyInstA = worldA.root.getObjectByName('marina_inst_buoy_bodies') as THREE.InstancedMesh;
+  assert.ok(buoyInstA instanceof THREE.InstancedMesh && buoyInstA.count === 4);
+  const matA = new THREE.Matrix4();
+  const matB = new THREE.Matrix4();
+  const posCheck = new THREE.Vector3();
+  for (let i = 0; i < buoyInstA.count; i++) {
+    buoyInstA.getMatrixAt(i, matA);
+    posCheck.setFromMatrixPosition(matA);
+    assert.ok(posCheck.x >= 166, `Buoy ${i} at x=${posCheck.x.toFixed(2)} must stay cleanly offshore`);
+  }
+
+  // 4. Verify zero overlap between Harbour yard props/machinery & buildings, containers, cranes, roads, sidewalks, or Harbour SUV
+  for (const fp of hStats.propFootprints) {
+    assert.equal(isPointInDrivingRoad(fp.x, fp.z, 0.2), false, `Harbour ${fp.kind} must not enter driving road`);
+    // Check block (-64, 64) raised sidewalks [21.25..24.75]
+    const dx = Math.abs(fp.x - -64);
+    const dz = Math.abs(fp.z - 64);
+    if (dx <= 25 && dz <= 25) {
+      assert.ok(dx < 21.25 && dz < 21.25, `Harbour ${fp.kind} at (${fp.x},${fp.z}) must stay inside block yard, off sidewalks`);
+    }
+    // Clear of buildings & containers
+    for (const col of layout.colliders) {
+      const hit =
+        fp.x >= col.minX - 0.5 && fp.x <= col.maxX + 0.5 && fp.z >= col.minZ - 0.5 && fp.z <= col.maxZ + 0.5;
+      assert.equal(hit, false, `Harbour ${fp.kind} must not overlap collider ${col.id}`);
+    }
+    // Clear of gantry cranes
+    for (const cr of HARBOUR_CRANE_FOOTPRINTS) {
+      const hitCrane = fp.x >= cr.minX && fp.x <= cr.maxX && fp.z >= cr.minZ && fp.z <= cr.maxZ;
+      assert.equal(hitCrane, false, `Harbour ${fp.kind} must not overlap gantry crane ${cr.id}`);
+    }
+    // Clear of Harbour Bayside Titan parked SUV at (-88, 62)
+    assert.ok(Math.hypot(fp.x - -88, fp.z - 62) >= 4.0, `Harbour ${fp.kind} must keep (-88, 62) SUV clear`);
+  }
+
+  // 5. Verify all 5 districts received district-specific outdoor decorations with zero obstruction of roads, sidewalks, trees, buildings, or spawns
+  assert.equal(dStats.coveredDistrictCount, 5, 'All 5 districts must receive district-specific outdoor decorations');
+  assert.ok(dStats.downtownPropsCount >= 8, `Expected >= 8 Downtown props, got ${dStats.downtownPropsCount}`);
+  assert.ok(dStats.coralHeightsPropsCount >= 8, `Expected >= 8 Coral Heights props, got ${dStats.coralHeightsPropsCount}`);
+  assert.ok(dStats.oceanDrivePropsCount >= 12, `Expected >= 12 Ocean Drive props, got ${dStats.oceanDrivePropsCount}`);
+  assert.ok(dStats.neonMilePropsCount >= 10, `Expected >= 10 Neon Mile props, got ${dStats.neonMilePropsCount}`);
+  assert.ok(dStats.industrialHarbourPropsCount >= 4, `Expected >= 4 Harbour outdoor props, got ${dStats.industrialHarbourPropsCount}`);
+
+  const parkedSpawns: Array<[number, number]> = [
+    [layout.playerSpawn.x, layout.playerSpawn.z],
+    [90.4, 46.5],
+    [25.5, -20.0],
+    [91.5, 84.0],
+    [-88.0, 62.0],
+  ];
+  for (const prop of dStats.placedProps) {
+    assert.equal(isPointInDrivingRoad(prop.x, prop.z, 0.25), false, `Prop ${prop.kind} must not sit on driving road`);
+    assert.equal(
+      isPointInProtectedRoadOrCrosswalk(prop.x, prop.z, layout.intersections),
+      false,
+      `Prop ${prop.kind} must not sit on crosswalk`,
+    );
+    assert.ok(prop.x < 103.0, `District prop ${prop.kind} at x=${prop.x} must stay off boardwalk/beach`);
+    for (const bx of [-64, 0, 64]) {
+      for (const bz of [-64, 0, 64]) {
+        const dx = Math.abs(prop.x - bx);
+        const dz = Math.abs(prop.z - bz);
+        if (dx <= 25 && dz <= 25) {
+          assert.ok(dx < 21.15 && dz < 21.15, `District prop ${prop.kind} at (${prop.x},${prop.z}) must not block sidewalk`);
+        }
+      }
+    }
+    for (const col of layout.colliders) {
+      const hit =
+        prop.x >= col.minX - 0.5 &&
+        prop.x <= col.maxX + 0.5 &&
+        prop.z >= col.minZ - 0.5 &&
+        prop.z <= col.maxZ + 0.5;
+      assert.equal(hit, false, `District prop ${prop.kind} must not clip inside collider ${col.id}`);
+    }
+    for (const t of layout.trees) {
+      assert.ok(Math.hypot(prop.x - t.x, prop.z - t.z) >= 1.5, `District prop ${prop.kind} must stay clear of trees`);
+    }
+    for (const [sx, sz] of parkedSpawns) {
+      assert.ok(Math.hypot(prop.x - sx, prop.z - sz) >= 4.0, `District prop ${prop.kind} must keep spawn/vehicle clear`);
+    }
+  }
+
+  // 6. Verify all Phase 2E-4 InstancedMesh batches have computed finite boundingSphere & identical deterministic matrices
+  let phase2e4InstCount = 0;
+  worldA.root.traverse((obj) => {
+    if (
+      obj instanceof THREE.InstancedMesh &&
+      (obj.name.startsWith('harbour_inst_') || obj.name.startsWith('marina_inst_') || obj.name.startsWith('district_inst_'))
+    ) {
+      phase2e4InstCount++;
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      const counterpart = worldB.root.getObjectByName(obj.name) as THREE.InstancedMesh | undefined;
+      assert.ok(counterpart instanceof THREE.InstancedMesh && counterpart.count === obj.count, `${obj.name} must be deterministic`);
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matA);
+        counterpart.getMatrixAt(i, matB);
+        for (let e = 0; e < 16; e++) {
+          assert.ok(Number.isFinite(matA.elements[e]));
+          assert.ok(Math.abs(matA.elements[e] - matB.elements[e]) < 1e-6);
+        }
+      }
+    }
+  });
+  assert.ok(phase2e4InstCount >= 18, `Expected >= 18 Phase 2E-4 instanced batches, got ${phase2e4InstCount}`);
+
+  // 7. Verify all preserved city infrastructure & prior Phase 2D / 2E-1 / 2E-2 / 2E-3 counts remain exact
+  assert.equal(layout.containers.length, 12, 'All 12 shipping containers must remain intact');
+  assert.equal(worldA.industrialHarbourArchitectureStats.warehouseCount, 3);
+  assert.equal(worldA.industrialHarbourArchitectureStats.totalLoadingBays, 9);
+  assert.equal(worldA.palmTreeAssetsStats.totalPalmCount, 27);
+  assert.equal(layout.trees.filter((t) => t.kind === 'park').length, 6);
+  assert.equal(worldA.trafficSignals.length, 4);
+  assert.equal(worldA.streetPointLights.length, 4);
+  assert.equal(worldA.wetRoadSurfaces.length, 4);
+  assert.equal(worldA.streetscapeStats.renderedSidewalkLoopCount, 9);
+  assert.ok(worldA.coastalShorelineStats.boardwalkPlankCount >= 200);
+  assert.ok(worldA.downtownArchitectureStats.skyscraperCount >= 6);
+  assert.equal(worldA.oceanDriveArchitectureStats.hotelCount, 11);
+  assert.equal(worldA.coralHeightsArchitectureStats.totalCount, 9);
+  assert.equal(worldA.neonMileArchitectureStats.totalCount, 5);
+
+  // 8. Clean GPU disposal without throwing
+  assert.doesNotThrow(() => worldA.dispose(), 'worldA.dispose() must cleanly release all Phase 2E-4 GPU resources');
+  assert.doesNotThrow(() => worldB.dispose(), 'worldB.dispose() must cleanly release all Phase 2E-4 GPU resources');
+});
+
 
 
 

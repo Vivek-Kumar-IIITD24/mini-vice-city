@@ -10,7 +10,9 @@ import {
   HudSnapshot,
   MinimapBlip,
   SaveData,
+  TimePreset,
   VehicleSpec,
+  WeatherType,
 } from '../types';
 import {
   DISTRICT_NAMES,
