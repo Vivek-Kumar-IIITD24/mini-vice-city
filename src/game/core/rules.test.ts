@@ -207,6 +207,22 @@ import {
   evaluateShallowWaterFactor,
   sampleShorelineContourX,
 } from '../world/coastalShorelineAssets';
+import {
+  SIDEWALK_SLAB_TOP_Y,
+  computeBlockSidewalkBounds,
+  createBenchGeometryParts,
+  createBeveledCurbGeometry,
+  createBollardGeometry,
+  createCornerRampAssemblyGeometry,
+  createFireHydrantGeometry,
+  createUpgradedStreetlightGeometries,
+  createWasteBinGeometryParts,
+  evaluateStreetscapeGroundY,
+  getStreetNameForRoadCoord,
+  isBlockSidewalkLoop,
+  isPointInDrivingRoad,
+  isPointInProtectedRoadOrCrosswalk,
+} from '../world/streetscapeAssets';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -5145,6 +5161,211 @@ test('Phase 2E-2: BuiltCityWorld integrates realistic beach, animated shoreline 
   // 8. Clean GPU disposal without throwing
   assert.doesNotThrow(() => world.dispose(), 'world.dispose() must cleanly release all coastal assets');
 });
+
+test('Phase 2E-3: streetscape pure helpers, custom geometries, and upgraded streetlights have finite vertices and valid unit normals', () => {
+  const layout = generateCityLayout();
+  assert.equal(layout.sidewalkLoops.length, 10);
+
+  const blockLoops = layout.sidewalkLoops.filter(isBlockSidewalkLoop);
+  const nonBlockLoops = layout.sidewalkLoops.filter((l) => !isBlockSidewalkLoop(l));
+  assert.equal(blockLoops.length, 9, 'Exactly the 9 inner city-block loops must qualify for raised block sidewalks');
+  assert.equal(nonBlockLoops.length, 1, 'Ocean Drive boardwalk stroll loop must be excluded from block sidewalk generation');
+
+  const sampleBounds = computeBlockSidewalkBounds(blockLoops[0]);
+  assert.equal(sampleBounds.outerHalf - sampleBounds.innerHalf, 3.5);
+  assert.equal(sampleBounds.topY, SIDEWALK_SLAB_TOP_Y);
+
+  assert.equal(getStreetNameForRoadCoord('ns', 96), 'OCEAN DR');
+  assert.equal(getStreetNameForRoadCoord('ew', 32), 'NEON MILE');
+  assert.equal(evaluateStreetscapeGroundY(87.2, 51.8), SIDEWALK_SLAB_TOP_Y);
+  assert.equal(evaluateStreetscapeGroundY(113.5, 0), 0.11);
+  assert.equal(evaluateStreetscapeGroundY(96, 0), 0.048);
+  assert.equal(evaluateStreetscapeGroundY(0, 0), 0);
+
+  const curbGeo = createBeveledCurbGeometry();
+  const rampGeo = createCornerRampAssemblyGeometry();
+  const bench = createBenchGeometryParts();
+  const bin = createWasteBinGeometryParts();
+  const hydrantGeo = createFireHydrantGeometry();
+  const bollardGeo = createBollardGeometry();
+  const slGeos = createUpgradedStreetlightGeometries();
+
+  const geos: Array<[string, THREE.BufferGeometry]> = [
+    ['curbGeo', curbGeo],
+    ['cornerRampGeo', rampGeo],
+    ['benchSlats', bench.slatsGeo],
+    ['benchFrame', bench.frameGeo],
+    ['binBody', bin.bodyGeo],
+    ['binHood', bin.hoodGeo],
+    ['hydrantGeo', hydrantGeo],
+    ['bollardGeo', bollardGeo],
+    ['streetlightPole', slGeos.poleAssemblyGeo],
+    ['streetlightHead', slGeos.luminaireHeadGeo],
+    ['streetlightDiffuser', slGeos.diffuserLensGeo],
+  ];
+
+  for (const [name, geo] of geos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 12, `${name} must have geometry vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} must have matching normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len >= 0.85 && len <= 1.15, `${name} normal ${i} must be unit-length, got ${len}`);
+    }
+    geo.dispose();
+  }
+});
+
+test('Phase 2E-3: BuiltCityWorld integrates raised 9-block sidewalks, curb ramps, road markings, deterministic street furniture, upgraded signals, and preserves all prior phases', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const worldA = buildCityWorld(layout, mockTextures);
+  const worldB = buildCityWorld(layout, mockTextures);
+  const stats = worldA.streetscapeStats;
+
+  // 1. Exact 9 block sidewalk loops built, 1 Ocean Drive boardwalk loop skipped
+  assert.equal(stats.renderedSidewalkLoopCount, 9, 'Must render all 9 inner city block sidewalks');
+  assert.equal(stats.skippedNonBlockLoopCount, 1, 'Must skip Ocean Drive boardwalk loop');
+  assert.equal(stats.sidewalkSlabCount, 36, '9 blocks × 4 straight sidewalk slabs');
+  assert.equal(stats.curbSegmentCount, 39, '9 blocks × 4 straight raised curbs + 3 east promenade curbs');
+  assert.equal(stats.curbRampCount, 72, '9 blocks × 4 corners × 2 crosswalk ramps');
+  assert.equal(stats.tactilePadCount, 72, '9 blocks × 4 corners × 2 tactile warning pads');
+  assert.ok(stats.stopBarCount >= 40 && stats.laneDashCount >= 200 && stats.directionalArrowCount >= 24);
+  assert.ok(stats.benchCount >= 16 && stats.wasteBinCount >= 12 && stats.streetSignCount >= 8);
+  assert.ok(stats.busStopSignCount >= 6 && stats.bollardCount >= 18 && stats.fireHydrantCount >= 8);
+  assert.equal(stats.upgradedStreetlightCount, layout.streetlights.length);
+  assert.equal(stats.upgradedTrafficSignalPoleCount, 8);
+
+  const matA = new THREE.Matrix4();
+  const matB = new THREE.Matrix4();
+  const posCheck = new THREE.Vector3();
+
+  // 2. Verify all streetscape_inst_* InstancedMesh batches have finite matrices & computed boundingSphere
+  // AND verify deterministic identical placement across worldA and worldB
+  const instBatchesA: THREE.InstancedMesh[] = [];
+  worldA.root.traverse((obj) => {
+    if (obj instanceof THREE.InstancedMesh && obj.name.startsWith('streetscape_inst_')) {
+      instBatchesA.push(obj);
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      const counterpart = worldB.root.getObjectByName(obj.name) as THREE.InstancedMesh | undefined;
+      assert.ok(counterpart instanceof THREE.InstancedMesh, `${obj.name} must match deterministically`);
+      assert.equal(obj.count, counterpart.count, `${obj.name} count must be deterministic`);
+
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matA);
+        counterpart.getMatrixAt(i, matB);
+        for (let e = 0; e < 16; e++) {
+          assert.ok(Number.isFinite(matA.elements[e]), `${obj.name}[${i}] must be finite`);
+          assert.ok(
+            Math.abs(matA.elements[e] - matB.elements[e]) < 1e-6,
+            `${obj.name}[${i}] placement must be deterministic`,
+          );
+        }
+      }
+    }
+  });
+  assert.ok(instBatchesA.length >= 16, `Expected >= 16 instanced streetscape batches, got ${instBatchesA.length}`);
+
+  // 3. Verify zero sidewalk slabs or street furniture duplicate the Ocean Drive boardwalk (x >= 103)
+  const slabMesh = worldA.root.getObjectByName('streetscape_inst_sidewalk_slabs') as THREE.InstancedMesh;
+  for (let i = 0; i < slabMesh.count; i++) {
+    slabMesh.getMatrixAt(i, matA);
+    posCheck.setFromMatrixPosition(matA);
+    assert.ok(posCheck.x < 100, `Sidewalk slab at x=${posCheck.x.toFixed(2)} must stay on city blocks, not boardwalk`);
+  }
+
+  // 4. Road markings (stop bars, dashes, straight & turn arrows, manholes) stay strictly outside intersections & crosswalks
+  for (const markName of [
+    'streetscape_inst_stop_bars',
+    'streetscape_inst_lane_dashes',
+    'streetscape_inst_arrows_straight',
+    'streetscape_inst_arrows_turn',
+    'streetscape_inst_manholes',
+  ]) {
+    const mInst = worldA.root.getObjectByName(markName) as THREE.InstancedMesh;
+    assert.ok(mInst instanceof THREE.InstancedMesh, `${markName} must be mounted`);
+    for (let i = 0; i < mInst.count; i++) {
+      mInst.getMatrixAt(i, matA);
+      posCheck.setFromMatrixPosition(matA);
+      assert.equal(
+        isPointInProtectedRoadOrCrosswalk(posCheck.x, posCheck.z, layout.intersections),
+        false,
+        `${markName}[${i}] at (${posCheck.x.toFixed(2)}, ${posCheck.z.toFixed(2)}) must not overlap intersection or crosswalk`,
+      );
+      assert.ok(posCheck.x <= 104, `${markName}[${i}] must not overlap Ocean Drive boardwalk`);
+    }
+  }
+
+  // 5. Verify no street furniture is in driving lanes, crosswalks, overlapping trees/buildings/spawn, or blocking pedestrian lane
+  const furnitureNames = [
+    'streetscape_inst_bench_frames',
+    'streetscape_inst_bin_bodies',
+    'streetscape_inst_fire_hydrants',
+    'streetscape_inst_bollards',
+    'streetscape_inst_utility_boxes',
+    'streetscape_inst_sign_posts',
+    'streetscape_inst_bus_posts',
+  ];
+  for (const fName of furnitureNames) {
+    const fInst = worldA.root.getObjectByName(fName) as THREE.InstancedMesh;
+    assert.ok(fInst instanceof THREE.InstancedMesh && fInst.count > 0, `${fName} must be present`);
+    for (let i = 0; i < fInst.count; i++) {
+      fInst.getMatrixAt(i, matA);
+      posCheck.setFromMatrixPosition(matA);
+      assert.equal(
+        isPointInDrivingRoad(posCheck.x, posCheck.z, 0.2),
+        false,
+        `${fName}[${i}] at (${posCheck.x.toFixed(2)}, ${posCheck.z.toFixed(2)}) must never sit in driving road`,
+      );
+      assert.equal(
+        isPointInProtectedRoadOrCrosswalk(posCheck.x, posCheck.z, layout.intersections),
+        false,
+        `${fName}[${i}] must never sit inside crosswalk`,
+      );
+      assert.ok(posCheck.x < 103, `${fName}[${i}] must not enter boardwalk/beach`);
+      // Check clearance against player spawn vista
+      const spawnDist = Math.hypot(posCheck.x - layout.playerSpawn.x, posCheck.z - layout.playerSpawn.z);
+      assert.ok(spawnDist >= 4.5, `${fName}[${i}] must stay clear of player spawn, dist=${spawnDist.toFixed(2)}`);
+      // Check clearance against trees and buildings
+      for (const t of layout.trees) {
+        const td = Math.hypot(posCheck.x - t.x, posCheck.z - t.z);
+        assert.ok(td >= 1.5, `${fName}[${i}] too close to tree at (${t.x},${t.z}), dist=${td.toFixed(2)}`);
+      }
+      for (const col of layout.colliders) {
+        assert.equal(
+          posCheck.x > col.minX - 0.1 && posCheck.x < col.maxX + 0.1 && posCheck.z > col.minZ - 0.1 && posCheck.z < col.maxZ + 0.1,
+          false,
+          `${fName}[${i}] must not clip inside building ${col.id}`,
+        );
+      }
+    }
+  }
+
+  // 6. Verify preserved city infrastructure & all prior phase stats
+  assert.equal(worldA.trafficSignals.length, 4, 'All 4 central traffic-signal controllers must remain preserved');
+  assert.equal(worldA.streetPointLights.length, 4, 'Exact 4 hub PointLights budget must remain preserved');
+  assert.equal(worldA.wetRoadSurfaces.length, 4, 'Exact 4 wetRoadSurfaces entries must remain preserved');
+  assert.equal(worldA.palmTreeAssetsStats.totalPalmCount, 27);
+  assert.ok(worldA.coastalShorelineStats.boardwalkPlankCount >= 200);
+  assert.ok(worldA.downtownArchitectureStats.skyscraperCount >= 6);
+  assert.equal(worldA.oceanDriveArchitectureStats.hotelCount, 11);
+  assert.equal(worldA.coralHeightsArchitectureStats.totalCount, 9);
+  assert.equal(worldA.neonMileArchitectureStats.totalCount, 5);
+  assert.equal(worldA.industrialHarbourArchitectureStats.warehouseCount, 3);
+
+  // 7. Clean GPU disposal without throwing
+  assert.doesNotThrow(() => worldA.dispose(), 'worldA.dispose() must cleanly release all streetscape GPU resources');
+  assert.doesNotThrow(() => worldB.dispose(), 'worldB.dispose() must cleanly release all streetscape GPU resources');
+});
+
 
 
 

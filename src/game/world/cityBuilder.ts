@@ -41,6 +41,11 @@ import {
   buildCoastalShorelineAssets,
   CoastalShorelineStats,
 } from './coastalShorelineAssets';
+import {
+  buildStreetscapeAssets,
+  createUpgradedTrafficSignalAssets,
+  StreetscapeStats,
+} from './streetscapeAssets';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -86,6 +91,7 @@ export interface BuiltCityWorld {
   industrialHarbourArchitectureStats: IndustrialHarbourArchitectureStats;
   palmTreeAssetsStats: PalmTreeAssetsStats;
   coastalShorelineStats: CoastalShorelineStats;
+  streetscapeStats: StreetscapeStats;
   dispose: () => void;
 }
 
@@ -525,6 +531,17 @@ export function buildCityWorld(
   zebraInst.computeBoundingSphere();
   disposables.push(zebraInst);
   root.add(zebraInst);
+
+  // Phase 2E-3: Raised 9-Block Sidewalks, Beveled Curbs, 72 Crosswalk Curb Ramps, Tactile Paving,
+  // Road Markings (Stop Bars, Lane Dashes, Arrows, Manholes) & District-Sensitive Street Furniture
+  const streetscapeAssets = buildStreetscapeAssets({
+    root,
+    layout,
+    disposables,
+    roadWetnessUniform,
+    maxAnisotropy: textures.asphaltMap.anisotropy || 4,
+  });
+  const streetscapeStats = streetscapeAssets.stats;
 
   // -------------------------------------------------------
   // 3. CORAL HEIGHTS BAYSIDE PALM PARK (Lawn + Fountain)
@@ -995,19 +1012,17 @@ export function buildCityWorld(
   }
 
   // -------------------------------------------------------
-  // 7. INSTANCED STREETLIGHTS + TRAFFIC LIGHT POLES
+  // 7. INSTANCED STREETLIGHTS + TRAFFIC LIGHT POLES (Upgraded Phase 2E-3 Assemblies)
   // -------------------------------------------------------
-  const poleGeo = new THREE.CylinderGeometry(0.11, 0.16, 7.2, 8);
-  poleGeo.translate(0, 3.6, 0);
-  const armGeo = new THREE.BoxGeometry(0.14, 0.14, 2.2);
-  armGeo.translate(0, 7.1, 1.0);
-  const bulbGeo = new THREE.BoxGeometry(0.38, 0.18, 0.65);
-  bulbGeo.translate(0, 6.98, 2.0);
-
   const poleMat = new THREE.MeshStandardMaterial({
     color: 0x334155,
     roughness: 0.42,
     metalness: 0.72,
+  });
+  const luminaireHeadMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.36,
+    metalness: 0.78,
   });
   const streetlightBulbMaterial = new THREE.MeshStandardMaterial({
     color: 0xfff3d6,
@@ -1015,15 +1030,19 @@ export function buildCityWorld(
     emissiveIntensity: 0.5,
     roughness: 0.2,
   });
-  disposables.push(poleGeo, armGeo, bulbGeo, poleMat, streetlightBulbMaterial);
+  disposables.push(poleMat, luminaireHeadMat, streetlightBulbMaterial);
 
-  const poleInst = new THREE.InstancedMesh(poleGeo, poleMat, layout.streetlights.length);
-  const armInst = new THREE.InstancedMesh(armGeo, poleMat, layout.streetlights.length);
+  const { poleAssemblyGeo, luminaireHeadGeo, diffuserLensGeo } = streetscapeAssets.streetlightGeos;
+  const poleInst = new THREE.InstancedMesh(poleAssemblyGeo, poleMat, layout.streetlights.length);
+  const armInst = new THREE.InstancedMesh(luminaireHeadGeo, luminaireHeadMat, layout.streetlights.length);
   const bulbInst = new THREE.InstancedMesh(
-    bulbGeo,
+    diffuserLensGeo,
     streetlightBulbMaterial,
     layout.streetlights.length,
   );
+  poleInst.name = 'streetscape_inst_streetlight_poles';
+  armInst.name = 'streetscape_inst_streetlight_heads';
+  bulbInst.name = 'streetscape_inst_streetlight_bulbs';
 
   layout.streetlights.forEach((sl, idx) => {
     dummy.position.set(sl.x, 0, sl.z);
@@ -1058,11 +1077,8 @@ export function buildCityWorld(
     streetPointLights.push(pl);
   }
 
-  // Traffic Light Signals at the 4 central intersections
-  const signalBoxGeo = new THREE.BoxGeometry(0.5, 1.35, 0.5);
-  const lampGeo = new THREE.SphereGeometry(0.16, 8, 8);
-  disposables.push(signalBoxGeo, lampGeo);
-
+  // Traffic Light Signals at the 4 central intersections (upgraded cantilevered assemblies)
+  const signalAssets = createUpgradedTrafficSignalAssets(poleMat, darkMetalMat, disposables);
   const centralIntersections = layout.intersections.filter(
     (n) => (n.gridX === 1 || n.gridX === 2) && (n.gridZ === 1 || n.gridZ === 2),
   );
@@ -1089,25 +1105,19 @@ export function buildCityWorld(
     });
     disposables.push(nsRedMat, nsGreenMat, ewRedMat, ewGreenMat);
 
-    // Place 2 signal posts on opposite diagonal corners
+    // Place 2 cantilevered signal posts on opposite diagonal corners
     const corners: Array<[number, number, boolean]> = [
       [inter.x + 8.4, inter.z + 8.4, true],
       [inter.x - 8.4, inter.z - 8.4, false],
     ];
     for (const [cx, cz, isNS] of corners) {
-      const post = new THREE.Group();
+      const post = signalAssets.createSignalAssembly(
+        isNS,
+        isNS ? nsRedMat : ewRedMat,
+        isNS ? nsGreenMat : ewGreenMat,
+      );
+      post.name = `traffic_signal_${inter.id}_${isNS ? 'ns' : 'ew'}`;
       post.position.set(cx, 0, cz);
-      const pMesh = new THREE.Mesh(poleGeo, poleMat);
-      pMesh.scale.set(0.85, 0.72, 0.85);
-      const housing = new THREE.Mesh(signalBoxGeo, darkMetalMat);
-      housing.position.set(0, 5.1, 0);
-      const rLamp = new THREE.Mesh(lampGeo, isNS ? nsRedMat : ewRedMat);
-      rLamp.position.set(0, 5.45, isNS ? 0.25 : 0);
-      if (!isNS) rLamp.position.x = 0.25;
-      const gLamp = new THREE.Mesh(lampGeo, isNS ? nsGreenMat : ewGreenMat);
-      gLamp.position.set(0, 4.75, isNS ? 0.25 : 0);
-      if (!isNS) gLamp.position.x = 0.25;
-      post.add(pMesh, housing, rLamp, gLamp);
       root.add(post);
     }
 
@@ -1142,6 +1152,7 @@ export function buildCityWorld(
     industrialHarbourArchitectureStats,
     palmTreeAssetsStats,
     coastalShorelineStats,
+    streetscapeStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

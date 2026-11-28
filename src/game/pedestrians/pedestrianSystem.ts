@@ -14,6 +14,7 @@ import {
   createInitialPedestrianAnimatorState,
   stepPedestrianAnimation,
 } from './pedestrianAnimator';
+import { evaluateStreetscapeGroundY } from '../world/streetscapeAssets';
 
 interface PedestrianActor {
   rig: PedestrianRig;
@@ -66,7 +67,7 @@ export class PedestrianSystem {
       const anim = createInitialPedestrianAnimatorState(i * 1.1);
       applyPedestrianPoseToRig(rig, anim);
 
-      rig.root.position.set(startX, 0, startZ);
+      rig.root.position.set(startX, evaluateStreetscapeGroundY(startX, startZ), startZ);
       rig.root.rotation.y = initHeading;
       this.root.add(rig.root);
 
@@ -192,7 +193,7 @@ export class PedestrianSystem {
       });
       applyPedestrianPoseToRig(a.rig, a.anim);
 
-      a.rig.root.position.set(a.x, 0, a.z);
+      a.rig.root.position.set(a.x, evaluateStreetscapeGroundY(a.x, a.z), a.z);
       a.rig.root.rotation.y = a.heading;
     }
 

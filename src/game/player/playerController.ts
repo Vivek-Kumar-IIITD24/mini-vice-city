@@ -13,6 +13,7 @@ import {
   stepPlayerAnimation,
 } from './playerAnimator';
 import { PlayerCharacterRig, createPlayerCharacterRig } from './playerModel';
+import { evaluateStreetscapeGroundY } from '../world/streetscapeAssets';
 
 export type PlayerLocomotionState = 'idle' | 'walk' | 'sprint' | 'jump';
 
@@ -220,7 +221,8 @@ export class PlayerController {
   }
 
   private syncMesh(): void {
-    this.root.position.set(this.x, 0, this.z);
+    const surfaceY = evaluateStreetscapeGroundY(this.x, this.z);
+    this.root.position.set(this.x, surfaceY, this.z);
     this.rig.bodyRig.position.y = this.y;
     this.rig.bodyRig.rotation.y = this.heading;
     const shadowScale = Math.max(0.55, 1 - this.y * 0.14);
