@@ -23,6 +23,11 @@ import {
   CoralHeightsArchitectureStats,
   isCoralHeightsBuildingSpec,
 } from './coralHeightsArchitecture';
+import {
+  buildNeonMileArchitecture,
+  isNeonMileBuildingSpec,
+  NeonMileArchitectureStats,
+} from './neonMileArchitecture';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -64,6 +69,7 @@ export interface BuiltCityWorld {
   downtownArchitectureStats: DowntownArchitectureStats;
   oceanDriveArchitectureStats: OceanDriveArchitectureStats;
   coralHeightsArchitectureStats: CoralHeightsArchitectureStats;
+  neonMileArchitectureStats: NeonMileArchitectureStats;
   dispose: () => void;
 }
 
@@ -818,6 +824,7 @@ export function buildCityWorld(
   const downtownTowerSpecs: BuildingSpec[] = [];
   const oceanDriveHotelSpecs: BuildingSpec[] = [];
   const coralHeightsSpecs: BuildingSpec[] = [];
+  const neonMileSpecs: BuildingSpec[] = [];
   for (const b of layout.buildings) {
     if (b.style === 'skyscraper' || b.style === 'landmark') {
       downtownTowerSpecs.push(b);
@@ -825,6 +832,8 @@ export function buildCityWorld(
       oceanDriveHotelSpecs.push(b);
     } else if (isCoralHeightsBuildingSpec(b)) {
       coralHeightsSpecs.push(b);
+    } else if (isNeonMileBuildingSpec(b)) {
+      neonMileSpecs.push(b);
     } else {
       buildArchitecturalStructure(b);
     }
@@ -850,6 +859,14 @@ export function buildCityWorld(
   });
 
   const coralHeightsArchitectureStats = buildCoralHeightsArchitecture(coralHeightsSpecs, {
+    root,
+    emissiveBuildingMaterials,
+    neonTrimMaterials,
+    environmentMeshesForCamera,
+    disposables,
+  });
+
+  const neonMileArchitectureStats = buildNeonMileArchitecture(neonMileSpecs, {
     root,
     emissiveBuildingMaterials,
     neonTrimMaterials,
@@ -1171,6 +1188,7 @@ export function buildCityWorld(
     downtownArchitectureStats,
     oceanDriveArchitectureStats,
     coralHeightsArchitectureStats,
+    neonMileArchitectureStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

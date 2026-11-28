@@ -160,6 +160,15 @@ import {
   isCoralHeightsBuildingSpec,
   resolveCoralHeightsProfile,
 } from '../world/coralHeightsArchitecture';
+import {
+  createArtDecoCornerPylonGeometry,
+  createCurvedDecoBayGeometry,
+  createCurvedNeonRibbonGeometry,
+  createSteppedDecoCrownGeometry,
+  createTheaterMarqueeGeometry,
+  isNeonMileBuildingSpec,
+  resolveNeonMileProfile,
+} from '../world/neonMileArchitecture';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -4194,6 +4203,190 @@ test('CinematicPostPipeline & shader firewalls guard against NaN/Infinity, unsaf
 
   pipeline.dispose();
 });
+
+test('Phase 2D-4: Neon Mile routes strictly the 5 Entertainment club venues with distinct identities and valid custom geometry normals', () => {
+  const layout = generateCityLayout();
+  const neonSpecs = layout.buildings.filter((b) => isNeonMileBuildingSpec(b));
+
+  const expectedIds = [
+    'ent_club_velvet',
+    'ent_club_solaris',
+    'ent_lounge_amber',
+    'ent_theater_vice',
+    'south_club_1',
+  ];
+  assert.equal(neonSpecs.length, 5, 'Neon Mile must route exactly 5 Entertainment club venues');
+  assert.deepEqual(
+    neonSpecs.map((b) => b.id).sort(),
+    [...expectedIds].sort(),
+    'Neon Mile routed IDs must match the exact 5 Entertainment venues',
+  );
+
+  // Verify non-Entertainment buildings (including Ocean Drive's od_club_south) are NOT routed to Neon Mile
+  const odClubSouth = layout.buildings.find((b) => b.id === 'od_club_south');
+  assert.ok(odClubSouth, 'od_club_south must exist in layout');
+  assert.equal(isNeonMileBuildingSpec(odClubSouth), false, 'Ocean Drive od_club_south must remain an Ocean Drive hotel');
+  for (const b of layout.buildings) {
+    if (!expectedIds.includes(b.id)) {
+      assert.equal(isNeonMileBuildingSpec(b), false, `Building ${b.id} must not be routed to Neon Mile`);
+    }
+  }
+
+  // Verify all 5 profiles have distinct archetypes, crisp titles, road-facing frontages, and safe sidewalk clearances
+  const profiles = neonSpecs.map((s) => ({ spec: s, profile: resolveNeonMileProfile(s) }));
+  assert.equal(new Set(profiles.map((p) => p.profile.archetype)).size, 5, 'All 5 Neon Mile venues must have distinct archetypes');
+
+  const byId = new Map(profiles.map((p) => [p.spec.id, p]));
+  assert.equal(byId.get('ent_club_velvet')?.profile.signTitle, 'VELVET');
+  assert.equal(byId.get('ent_club_velvet')?.profile.neonBand, 'magenta');
+  assert.equal(byId.get('ent_club_velvet')?.profile.frontage, '-z');
+
+  assert.equal(byId.get('ent_club_solaris')?.profile.signTitle, 'SOLARIS');
+  assert.equal(byId.get('ent_club_solaris')?.profile.neonBand, 'cyan');
+  assert.equal(byId.get('ent_club_solaris')?.profile.hasVerticalSignTower, true);
+  assert.equal(byId.get('ent_club_solaris')?.profile.secondaryFrontage, '+x');
+
+  assert.equal(byId.get('ent_lounge_amber')?.profile.signTitle, 'AMBER LOUNGE');
+  assert.equal(byId.get('ent_lounge_amber')?.profile.neonBand, 'amber');
+  assert.equal(byId.get('ent_lounge_amber')?.profile.hasRooftopPergola, true);
+  assert.equal(byId.get('ent_lounge_amber')?.profile.frontage, '+z');
+
+  assert.equal(byId.get('ent_theater_vice')?.profile.signTitle, 'VICE THEATER');
+  assert.equal(byId.get('ent_theater_vice')?.profile.neonBand, 'violet');
+  assert.equal(byId.get('ent_theater_vice')?.profile.hasMarquee, true);
+  assert.equal(byId.get('ent_theater_vice')?.profile.hasVerticalSignTower, true);
+
+  assert.equal(byId.get('south_club_1')?.profile.signTitle, 'SOUTH CLUB');
+  assert.equal(byId.get('south_club_1')?.profile.hasDecorativeLattice, true);
+  assert.equal(byId.get('south_club_1')?.profile.frontage, '-z');
+  // South Club sits at z=116 (depth 14 -> north wall z=109, north sidewalk outer edge z=106.5 -> clearance = 2.5m)
+  assert.ok(
+    (byId.get('south_club_1')?.profile.canopyProjection ?? 99) <= 2.0,
+    'South Club projecting canopy must leave clear pedestrian sidewalk north of z=106.5',
+  );
+
+  // Verify every custom procedural Neon Mile geometry has finite positions, valid bounding sphere, and strictly unit normals
+  const customGeos: Array<[string, THREE.BufferGeometry]> = [
+    ['curvedDecoBay', createCurvedDecoBayGeometry()],
+    ['curvedNeonRibbon', createCurvedNeonRibbonGeometry()],
+    ['theaterMarquee', createTheaterMarqueeGeometry()],
+    ['steppedDecoCrown', createSteppedDecoCrownGeometry()],
+    ['artDecoCornerPylon', createArtDecoCornerPylonGeometry()],
+  ];
+
+  for (const [label, geo] of customGeos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 18, `${label} must have non-trivial procedural vertex count`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have vertex normals matching positions`);
+    assert.ok(geo.boundingSphere && Number.isFinite(geo.boundingSphere.radius) && geo.boundingSphere.radius > 0);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} position must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len > 0.85 && len < 1.15, `${label} vertex ${i} normal must be unit-length, got ${len}`);
+    }
+    geo.dispose();
+  }
+});
+
+test('Phase 2D-4: buildCityWorld builds Neon Mile with InstancedMesh batching, readable signage, day/night lighting calibration, and zero regressions', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const weather = new TimeAndWeatherSystem(scene, false);
+
+  const nm = world.neonMileArchitectureStats;
+  assert.equal(nm.totalCount, 5, 'buildCityWorld must build all 5 Neon Mile venues');
+  assert.equal(nm.archetypesUsed.length, 5, 'all 5 Neon Mile venue archetypes must be instantiated');
+  assert.ok(nm.instancedBatches >= 8, `Neon Mile must batch repeated details into InstancedMeshes, got ${nm.instancedBatches}`);
+  assert.ok(nm.totalFacadeInstances >= 180, `Neon Mile must render rich architectural instances, got ${nm.totalFacadeInstances}`);
+  assert.ok(nm.sharedMaterialCount <= 24, `Neon Mile shared PBR pool should stay compact, got ${nm.sharedMaterialCount}`);
+
+  // Verify Vice Theater landmark features (projecting 3-face marquee + 2-sided vertical sign tower + 4 posters + stepped crown)
+  const viceSummary = nm.venues.find((v) => v.id === 'ent_theater_vice');
+  assert.ok(viceSummary, 'Vice Theater summary must be present');
+  assert.equal(viceSummary.hasMarquee, true);
+  assert.equal(viceSummary.hasVerticalSignTower, true);
+  assert.equal(viceSummary.posterCount, 4, 'Vice Theater must render 4 procedural movie/show posters');
+  assert.ok(viceSummary.signMeshCount >= 5, 'Vice Theater must render 3 marquee boards + 2 vertical sign tower faces');
+  assert.ok(viceSummary.pinnacleY > 24, `Vice Theater crown/tower pinnacle must rise above 24m, got ${viceSummary.pinnacleY}`);
+
+  // Verify all 5 venues have mounted signage planes and grounded heights
+  for (const v of nm.venues) {
+    assert.ok(v.signMeshCount >= 1, `${v.id} must have readable signage mounted`);
+    assert.ok(Number.isFinite(v.pinnacleY) && v.pinnacleY > 14, `${v.id} pinnacleY must be finite and grounded`);
+    const group = world.root.getObjectByName(`neon_mile_${v.id}`);
+    assert.ok(group, `Scene graph must contain named group neon_mile_${v.id}`);
+  }
+
+  // Verify all Neon Mile InstancedMesh batches have finite bounding spheres & finite instance matrices
+  const neonInstMeshes: THREE.InstancedMesh[] = [];
+  const matCheck = new THREE.Matrix4();
+  world.root.traverse((obj) => {
+    if (obj instanceof THREE.InstancedMesh && obj.name.startsWith('neon_mile_inst_')) {
+      neonInstMeshes.push(obj);
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matCheck);
+        for (const elem of matCheck.elements) {
+          assert.ok(Number.isFinite(elem), `${obj.name} instance ${i} has non-finite matrix element`);
+        }
+      }
+    }
+  });
+  assert.equal(neonInstMeshes.length, nm.instancedBatches, 'All reported Neon Mile InstancedMesh batches must exist in scene graph');
+
+  // Verify daytime vs nighttime emissive calibration via TimeAndWeatherSystem (no excessive daytime glow, rich nightlife glow)
+  weather.setTimePreset(TimePreset.Afternoon);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, 0, 64, world, 0, 0);
+  const daySignIntensities = world.emissiveBuildingMaterials
+    .filter((m) => m.emissiveMap != null)
+    .map((m) => m.emissiveIntensity);
+  assert.ok(daySignIntensities.length >= 12, 'Neon Mile interior glass & signage must use emissiveMaps');
+  assert.ok(
+    daySignIntensities.every((v) => v <= 0.14),
+    `Daytime emissiveMap signage/windows must stay calm (<=0.14), got max ${Math.max(...daySignIntensities)}`,
+  );
+  const dayNeonIntensities = world.neonTrimMaterials.map((m) => m.emissiveIntensity);
+  assert.ok(
+    dayNeonIntensities.every((v) => v <= 0.7),
+    `Daytime neon trims must stay below bloom threshold (<=0.70), got max ${Math.max(...dayNeonIntensities)}`,
+  );
+
+  weather.setTimePreset(TimePreset.Night);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, 0, 64, world, 0, 0);
+  const nightSignIntensities = world.emissiveBuildingMaterials
+    .filter((m) => m.emissiveMap != null)
+    .map((m) => m.emissiveIntensity);
+  assert.ok(
+    nightSignIntensities.every((v) => v >= 1.35 && v <= 1.65),
+    `Nighttime emissiveMap signage/windows must glow cleanly (1.35..1.65), got ${nightSignIntensities[0]}`,
+  );
+  const nightNeonIntensities = world.neonTrimMaterials.map((m) => m.emissiveIntensity);
+  assert.ok(
+    nightNeonIntensities.every((v) => v >= 2.55),
+    `Nighttime neon trims must bloom richly (>=2.55), got min ${Math.min(...nightNeonIntensities)}`,
+  );
+
+  // Verify zero regression on Phase 2D-1 (Downtown), Phase 2D-2 (Ocean Drive), and Phase 2D-3 (Coral Heights)
+  assert.ok(world.downtownArchitectureStats.skyscraperCount >= 6, 'Downtown skyscrapers must remain intact');
+  assert.equal(world.downtownArchitectureStats.landmarkCount, 1, 'Vice Tower landmark must remain intact');
+  assert.equal(world.oceanDriveArchitectureStats.hotelCount, 11, 'All 11 Ocean Drive hotels must remain intact');
+  assert.equal(world.coralHeightsArchitectureStats.totalCount, 9, 'All 9 Coral Heights residential buildings must remain intact');
+
+  weather.dispose();
+  world.dispose();
+});
+
 
 
 
