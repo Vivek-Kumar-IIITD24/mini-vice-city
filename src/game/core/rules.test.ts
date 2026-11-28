@@ -178,6 +178,16 @@ import {
   isIndustrialHarbourWarehouseSpec,
   resolveIndustrialHarbourProfile,
 } from '../world/industrialHarbourArchitecture';
+import {
+  ALL_PALM_SPECIES,
+  assignPalmSpecies,
+  createCoconutClusterGeometry,
+  createPalmCrownGeometry,
+  createPalmTrunkGeometry,
+  createPinnateFrondGeometry,
+  createSabalFanLeafGeometry,
+  hasCoconutCluster,
+} from '../world/palmTreeAssets';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -4633,6 +4643,226 @@ test('Phase 2D-5: buildCityWorld builds Industrial Harbour with clearances vs ro
   weather.dispose();
   world.dispose();
 });
+
+test('Phase 2E-1: palm species assignment is deterministic, covers all 4 tropical species, and validates custom pinnate, Sabal fan, trunk, and coconut geometries', () => {
+  const layoutA = generateCityLayout();
+  const layoutB = generateCityLayout();
+  const palmsA = layoutA.trees.filter((t) => t.kind === 'palm');
+  const palmsB = layoutB.trees.filter((t) => t.kind === 'palm');
+
+  assert.equal(palmsA.length, palmsB.length, 'Palm placement count must be deterministic');
+  assert.ok(palmsA.length >= 25, `Expected full city palm distribution, got ${palmsA.length}`);
+
+  // Verify deterministic species and coconut assignment across repeated generations
+  const counts: Record<string, number> = {
+    coconut: 0,
+    royal: 0,
+    sabal: 0,
+    compact_tropical: 0,
+  };
+  let coconutClusterCount = 0;
+
+  for (let i = 0; i < palmsA.length; i++) {
+    const spA = assignPalmSpecies(palmsA[i]);
+    const spB = assignPalmSpecies(palmsB[i]);
+    assert.equal(spA, spB, `Palm ${i} species assignment must be deterministic`);
+    assert.equal(
+      hasCoconutCluster(palmsA[i], spA),
+      hasCoconutCluster(palmsB[i], spB),
+      `Palm ${i} coconut cluster assignment must be deterministic`,
+    );
+    counts[spA] += 1;
+    if (spA !== 'coconut') {
+      assert.equal(
+        hasCoconutCluster(palmsA[i], spA),
+        false,
+        `Non-coconut species (${spA}) must never receive coconut clusters`,
+      );
+    } else if (hasCoconutCluster(palmsA[i], spA)) {
+      coconutClusterCount += 1;
+    }
+  }
+
+  for (const sp of ALL_PALM_SPECIES) {
+    assert.ok(counts[sp] >= 3, `Species ${sp} must be well-represented across the city, got ${counts[sp]}`);
+  }
+  assert.ok(
+    coconutClusterCount > 0 && coconutClusterCount <= counts.coconut,
+    `Coconut clusters must appear on a subset of coconut palms, got ${coconutClusterCount}/${counts.coconut}`,
+  );
+
+  // Helper to verify finite positions, unit normals, and valid bounding box/sphere
+  const assertGeometryValid = (geo: THREE.BufferGeometry, label: string) => {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 24, `${label} must have valid vertex positions`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have matching vertex normals`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} position must be finite`,
+      );
+      const nx = norm.getX(i);
+      const ny = norm.getY(i);
+      const nz = norm.getZ(i);
+      assert.ok(Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz), `${label} normal ${i} must be finite`);
+      const len = Math.hypot(nx, ny, nz);
+      assert.ok(len >= 0.85 && len <= 1.15, `${label} normal ${i} must be unit length, got ${len}`);
+    }
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+    assert.ok(geo.boundingBox && !geo.boundingBox.isEmpty(), `${label} must have valid boundingBox`);
+    assert.ok(
+      geo.boundingSphere && Number.isFinite(geo.boundingSphere.radius) && geo.boundingSphere.radius > 0,
+      `${label} must have finite positive boundingSphere`,
+    );
+  };
+
+  // Validate individual pinnate feather frond geometry (paired left & right leaflets + lateral spread)
+  const frond = createPinnateFrondGeometry({
+    length: 3.4,
+    archHeight: 0.72,
+    tipDrop: 1.05,
+    leafletPairs: 16,
+    maxLeafletLength: 0.88,
+    leafletWidth: 0.085,
+    leafletDroop: 0.42,
+  });
+  assertGeometryValid(frond.geometry, 'pinnate_frond');
+  assert.equal(frond.leftLeafletCount, frond.rightLeafletCount, 'Pinnate frond must have paired left & right leaflets');
+  assert.ok(frond.leafletPairCount >= 12, `Pinnate frond must have >= 12 leaflet pairs, got ${frond.leafletPairCount}`);
+  assert.ok(
+    frond.geometry.boundingBox!.min.x < -0.45 && frond.geometry.boundingBox!.max.x > 0.45,
+    'Pinnate frond leaflets must spread symmetrically on both sides of rachis',
+  );
+  frond.geometry.dispose();
+
+  // Validate individual Sabal costapalmate fan leaf geometry (distinct radial segments + curved depth)
+  const fan = createSabalFanLeafGeometry({
+    petioleLength: 1.05,
+    petioleArch: 0.24,
+    fanRadius: 1.15,
+    segmentCount: 11,
+    fanArcRadians: Math.PI * 1.12,
+    segmentDroop: 0.34,
+  });
+  assertGeometryValid(fan.geometry, 'sabal_fan_leaf');
+  assert.ok(fan.radialSegmentCount >= 9, `Sabal fan leaf must have >= 9 radial segments, got ${fan.radialSegmentCount}`);
+  const fanBox = fan.geometry.boundingBox!;
+  assert.ok(fanBox.max.x - fanBox.min.x > 1.2, 'Sabal fan leaf must span a wide palmate fan arc');
+  assert.ok(fanBox.max.y - fanBox.min.y > 0.25, 'Sabal fan leaf must have non-flat 3D folded bend');
+  fan.geometry.dispose();
+
+  // Validate all 4 species trunks and crowns plus coconut cluster geometry
+  for (const sp of ALL_PALM_SPECIES) {
+    const trunk = createPalmTrunkGeometry(sp);
+    const crown = createPalmCrownGeometry(sp);
+    assertGeometryValid(trunk.geometry, `trunk_${sp}`);
+    assertGeometryValid(crown.geometry, `crown_${sp}`);
+    assert.ok(trunk.height >= 5.5 && trunk.height <= 11.5, `trunk_${sp} height ${trunk.height} must be realistic`);
+    assert.ok(trunk.ringCount >= 18, `trunk_${sp} must have clear ringed/segmented detail`);
+    assert.ok(crown.frondCount >= 12, `crown_${sp} must have multi-tiered frond fullness, got ${crown.frondCount}`);
+    assert.ok(crown.totalLeafletCount >= 140, `crown_${sp} must have rich leaflet/segment geometry`);
+    assert.ok(
+      Number.isFinite(trunk.crownOrigin.x) && Number.isFinite(trunk.crownOrigin.y) && Number.isFinite(trunk.crownOrigin.z),
+      `trunk_${sp} crownOrigin must be finite`,
+    );
+    trunk.geometry.dispose();
+    crown.geometry.dispose();
+  }
+
+  const coconuts = createCoconutClusterGeometry();
+  assertGeometryValid(coconuts.geometry, 'coconut_cluster');
+  assert.ok(coconuts.coconutCount >= 5, `Coconut cluster must include multiple coconuts, got ${coconuts.coconutCount}`);
+  coconuts.geometry.dispose();
+});
+
+test('Phase 2E-1: BuiltCityWorld integrates instanced multi-species palms, preserves exact TreeSpec placements, park broadleaf trees, and all Phase 2D districts', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const world = buildCityWorld(layout, mockTextures);
+
+  const expectedPalms = layout.trees.filter((t) => t.kind === 'palm');
+  const expectedParkTrees = layout.trees.filter((t) => t.kind === 'park');
+  const stats = world.palmTreeAssetsStats;
+
+  // 1. Exact palm count & preserved TreeSpec placements (x, z, scale, lean, rotY)
+  assert.equal(stats.totalPalmCount, expectedPalms.length, 'Every palm TreeSpec must be built');
+  assert.equal(stats.totalCrownInstances, expectedPalms.length, 'Every palm must have a matching instanced crown');
+  assert.equal(stats.placements.length, expectedPalms.length);
+  for (let i = 0; i < expectedPalms.length; i++) {
+    const src = expectedPalms[i];
+    const placed = stats.placements[i];
+    assert.equal(placed.x, src.x, `Palm ${i} x coordinate must be preserved`);
+    assert.equal(placed.z, src.z, `Palm ${i} z coordinate must be preserved`);
+    assert.equal(placed.scale, src.scale, `Palm ${i} scale must be preserved`);
+    assert.equal(placed.lean, src.lean, `Palm ${i} lean must be preserved`);
+    assert.equal(placed.rotY, src.rotY, `Palm ${i} rotY must be preserved`);
+  }
+
+  // 2. All 4 species active & compact shared material/geometry budgets
+  let speciesSum = 0;
+  for (const sp of ALL_PALM_SPECIES) {
+    assert.ok(stats.speciesDistribution[sp] > 0, `BuiltCityWorld must contain ${sp} palms`);
+    speciesSum += stats.speciesDistribution[sp];
+  }
+  assert.equal(speciesSum, expectedPalms.length);
+  assert.ok(
+    stats.sharedMaterialCount <= 6,
+    `Palm shared PBR material pool must stay compact (<= 6), got ${stats.sharedMaterialCount}`,
+  );
+  assert.equal(stats.sharedGeometryCount, 9, 'Expected 4 trunk + 4 crown + 1 coconut shared geometries');
+  assert.ok(stats.coconutClusterInstances > 0, 'Coastal coconut palms must instantiate coconut clusters');
+
+  // 3. Every palm InstancedMesh has finite instance matrices and valid computed boundingSphere
+  const palmInstMeshes: THREE.InstancedMesh[] = [];
+  const matCheck = new THREE.Matrix4();
+  world.root.traverse((obj) => {
+    if (obj instanceof THREE.InstancedMesh && obj.name.startsWith('palm_inst_')) {
+      palmInstMeshes.push(obj);
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matCheck);
+        for (const elem of matCheck.elements) {
+          assert.ok(Number.isFinite(elem), `${obj.name} instance ${i} has non-finite matrix element`);
+        }
+      }
+    }
+  });
+  assert.equal(
+    palmInstMeshes.length,
+    stats.instancedBatches,
+    'Every reported palm InstancedMesh batch must be mounted in scene graph',
+  );
+
+  // 4. Verify Coral Heights park broadleaf trees (kind === 'park') remain completely untouched
+  assert.equal(expectedParkTrees.length, 6, 'Coral Heights Bayside Park must retain all 6 broadleaf trees');
+  let parkGroupsFound = 0;
+  for (const child of world.root.children) {
+    if (child instanceof THREE.Group && child.children.length === 3) {
+      const matchesParkPos = expectedParkTrees.some(
+        (pt) => Math.abs(child.position.x - pt.x) < 1e-4 && Math.abs(child.position.z - pt.z) < 1e-4,
+      );
+      if (matchesParkPos) parkGroupsFound++;
+    }
+  }
+  assert.equal(parkGroupsFound, expectedParkTrees.length, 'All 6 Coral Heights park broadleaf trees must remain intact');
+
+  // 5. Verify zero regressions across all 5 completed Phase 2D architectural districts
+  assert.ok(world.downtownArchitectureStats.skyscraperCount >= 6, 'Downtown skyscrapers must remain intact');
+  assert.equal(world.downtownArchitectureStats.landmarkCount, 1, 'Vice Tower landmark must remain intact');
+  assert.equal(world.oceanDriveArchitectureStats.hotelCount, 11, 'Ocean Drive hotels must remain intact');
+  assert.equal(world.coralHeightsArchitectureStats.totalCount, 9, 'Coral Heights villas/apartments/shop must remain intact');
+  assert.equal(world.neonMileArchitectureStats.totalCount, 5, 'Neon Mile venues must remain intact');
+  assert.equal(world.industrialHarbourArchitectureStats.warehouseCount, 3, 'Industrial Harbour warehouses must remain intact');
+
+  // 6. Clean resource disposal without throwing
+  assert.doesNotThrow(() => world.dispose(), 'world.dispose() must cleanly release all palm geometries, materials, textures, and InstancedMeshes');
+});
+
 
 
 

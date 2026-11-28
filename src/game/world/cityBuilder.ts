@@ -33,6 +33,10 @@ import {
   IndustrialHarbourArchitectureStats,
   isIndustrialHarbourWarehouseSpec,
 } from './industrialHarbourArchitecture';
+import {
+  buildPalmTreeAssets,
+  PalmTreeAssetsStats,
+} from './palmTreeAssets';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -76,6 +80,7 @@ export interface BuiltCityWorld {
   coralHeightsArchitectureStats: CoralHeightsArchitectureStats;
   neonMileArchitectureStats: NeonMileArchitectureStats;
   industrialHarbourArchitectureStats: IndustrialHarbourArchitectureStats;
+  palmTreeAssetsStats: PalmTreeAssetsStats;
   dispose: () => void;
 }
 
@@ -986,75 +991,27 @@ export function buildCityWorld(
   const palms = layout.trees.filter((t) => t.kind === 'palm');
   const parkTrees = layout.trees.filter((t) => t.kind === 'park');
 
-  // Palm trunks (tapered cylinder) + 8 gracefully arched coastal fronds per palm (InstancedMesh)
-  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.34, 8.8, 8);
-  trunkGeo.translate(0, 4.4, 0);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x70543e, roughness: 0.92 });
-  const frondGeo = new THREE.ConeGeometry(0.82, 4.6, 4);
-  frondGeo.scale(1.05, 1.0, 0.16);
-  frondGeo.translate(0, 2.2, 0);
-  frondGeo.rotateX(Math.PI * 0.58);
-  const frondMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.68,
-    metalness: 0.04,
+  // Phase 2E-1: Multi-species realistic instanced tropical palm trees
+  // (Coconut, Royal, Sabal fan palm, and Compact Tropical palms)
+  const palmTreeAssetsStats = buildPalmTreeAssets(palms, {
+    root,
+    disposables,
+    windTimeUniform: oceanUniforms.uTime,
   });
-  disposables.push(trunkGeo, trunkMat, frondGeo, frondMat);
 
-  const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, palms.length);
-  const frondInst = new THREE.InstancedMesh(frondGeo, frondMat, palms.length * 8);
-  const frondPalette = [0x266e3d, 0x328249, 0x1f5c33, 0x3d8f51];
-
-  let frondIdx = 0;
-  palms.forEach((p, idx) => {
-    dummy.position.set(p.x, 0, p.z);
-    dummy.rotation.set(p.lean, p.rotY, 0);
-    dummy.scale.set(p.scale, p.scale, p.scale);
-    dummy.updateMatrix();
-    trunkInst.setMatrixAt(idx, dummy.matrix);
-
-    // Top of leaning trunk
-    const topX = p.x + Math.sin(p.rotY) * Math.sin(p.lean) * 8.6 * p.scale;
-    const topY = Math.cos(p.lean) * 8.6 * p.scale;
-    const topZ = p.z + Math.cos(p.rotY) * Math.sin(p.lean) * 8.6 * p.scale;
-
-    for (let f = 0; f < 8; f++) {
-      const upperLayer = f >= 6;
-      dummy.position.set(topX, topY + (upperLayer ? 0.25 : 0), topZ);
-      dummy.rotation.set(upperLayer ? -0.22 : 0.14, p.rotY + (f / 8) * Math.PI * 2, 0);
-      const fs = p.scale * (upperLayer ? 0.78 : 1.05);
-      dummy.scale.set(fs, fs, fs);
-      dummy.updateMatrix();
-      frondInst.setMatrixAt(frondIdx, dummy.matrix);
-      frondInst.setColorAt(
-        frondIdx,
-        tmpColor.setHex(frondPalette[(idx + f) % frondPalette.length]),
-      );
-      frondIdx++;
-    }
-  });
-  trunkInst.instanceMatrix.needsUpdate = true;
-  frondInst.instanceMatrix.needsUpdate = true;
-  if (frondInst.instanceColor) frondInst.instanceColor.needsUpdate = true;
-  trunkInst.castShadow = true;
-  frondInst.castShadow = true;
-  trunkInst.computeBoundingSphere();
-  frondInst.computeBoundingSphere();
-  disposables.push(trunkInst, frondInst);
-  root.add(trunkInst, frondInst);
-
-  // Park Broadleaf Trees (Coral Heights)
+  // Park Broadleaf Trees (Coral Heights — preserved untouched)
   const parkTrunkGeo = new THREE.CylinderGeometry(0.24, 0.36, 3.6, 8);
   parkTrunkGeo.translate(0, 1.8, 0);
+  const parkTrunkMat = new THREE.MeshStandardMaterial({ color: 0x70543e, roughness: 0.92 });
   const parkCanopyGeo = new THREE.DodecahedronGeometry(2.6, 1);
   const parkCanopyMat = new THREE.MeshStandardMaterial({ color: 0x2f7d47, roughness: 0.82 });
-  disposables.push(parkTrunkGeo, parkCanopyGeo, parkCanopyMat);
+  disposables.push(parkTrunkGeo, parkTrunkMat, parkCanopyGeo, parkCanopyMat);
 
   for (const pt of parkTrees) {
     const g = new THREE.Group();
     g.position.set(pt.x, 0.14, pt.z);
     g.scale.setScalar(pt.scale);
-    const t = new THREE.Mesh(parkTrunkGeo, trunkMat);
+    const t = new THREE.Mesh(parkTrunkGeo, parkTrunkMat);
     const c1 = new THREE.Mesh(parkCanopyGeo, parkCanopyMat);
     c1.position.y = 4.6;
     const c2 = new THREE.Mesh(parkCanopyGeo, parkCanopyMat);
@@ -1210,6 +1167,7 @@ export function buildCityWorld(
     coralHeightsArchitectureStats,
     neonMileArchitectureStats,
     industrialHarbourArchitectureStats,
+    palmTreeAssetsStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },
