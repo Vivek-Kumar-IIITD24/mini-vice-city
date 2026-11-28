@@ -28,6 +28,11 @@ import {
   isNeonMileBuildingSpec,
   NeonMileArchitectureStats,
 } from './neonMileArchitecture';
+import {
+  buildIndustrialHarbourArchitecture,
+  IndustrialHarbourArchitectureStats,
+  isIndustrialHarbourWarehouseSpec,
+} from './industrialHarbourArchitecture';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -70,6 +75,7 @@ export interface BuiltCityWorld {
   oceanDriveArchitectureStats: OceanDriveArchitectureStats;
   coralHeightsArchitectureStats: CoralHeightsArchitectureStats;
   neonMileArchitectureStats: NeonMileArchitectureStats;
+  industrialHarbourArchitectureStats: IndustrialHarbourArchitectureStats;
   dispose: () => void;
 }
 
@@ -825,6 +831,7 @@ export function buildCityWorld(
   const oceanDriveHotelSpecs: BuildingSpec[] = [];
   const coralHeightsSpecs: BuildingSpec[] = [];
   const neonMileSpecs: BuildingSpec[] = [];
+  const industrialHarbourSpecs: BuildingSpec[] = [];
   for (const b of layout.buildings) {
     if (b.style === 'skyscraper' || b.style === 'landmark') {
       downtownTowerSpecs.push(b);
@@ -834,6 +841,8 @@ export function buildCityWorld(
       coralHeightsSpecs.push(b);
     } else if (isNeonMileBuildingSpec(b)) {
       neonMileSpecs.push(b);
+    } else if (isIndustrialHarbourWarehouseSpec(b)) {
+      industrialHarbourSpecs.push(b);
     } else {
       buildArchitecturalStructure(b);
     }
@@ -873,6 +882,17 @@ export function buildCityWorld(
     environmentMeshesForCamera,
     disposables,
   });
+
+  const industrialHarbourArchitectureStats = buildIndustrialHarbourArchitecture(
+    industrialHarbourSpecs,
+    {
+      root,
+      emissiveBuildingMaterials,
+      neonTrimMaterials,
+      environmentMeshesForCamera,
+      disposables,
+    },
+  );
 
   // -------------------------------------------------------
   // 5. INDUSTRIAL HARBOUR CONTAINERS & GANTRY CRANES
@@ -1189,6 +1209,7 @@ export function buildCityWorld(
     oceanDriveArchitectureStats,
     coralHeightsArchitectureStats,
     neonMileArchitectureStats,
+    industrialHarbourArchitectureStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

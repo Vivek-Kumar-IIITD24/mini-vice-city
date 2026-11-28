@@ -169,6 +169,15 @@ import {
   isNeonMileBuildingSpec,
   resolveNeonMileProfile,
 } from '../world/neonMileArchitecture';
+import {
+  createIndustrialGableRoofGeometry,
+  createRoofVentCowlGeometry,
+  createSawtoothClerestoryRoofGeometry,
+  createSlopedDockCanopyGeometry,
+  createSteelGussetBracketGeometry,
+  isIndustrialHarbourWarehouseSpec,
+  resolveIndustrialHarbourProfile,
+} from '../world/industrialHarbourArchitecture';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -4386,6 +4395,245 @@ test('Phase 2D-4: buildCityWorld builds Neon Mile with InstancedMesh batching, r
   weather.dispose();
   world.dispose();
 });
+
+test('Phase 2D-5: Industrial Harbour routes strictly the 3 warehouse buildings with distinct identities and valid custom geometry normals', () => {
+  const layout = generateCityLayout();
+  const harbourWarehouses = layout.buildings.filter((b) => isIndustrialHarbourWarehouseSpec(b));
+
+  const expectedIds = ['harbour_wh_1', 'harbour_wh_2', 'west_harbour_1'];
+  assert.equal(harbourWarehouses.length, 3, 'Industrial Harbour must route exactly 3 warehouse buildings');
+  assert.deepEqual(
+    harbourWarehouses.map((b) => b.id).sort(),
+    [...expectedIds].sort(),
+    'Industrial Harbour routed IDs must match harbour_wh_1, harbour_wh_2, and west_harbour_1',
+  );
+
+  // Verify no non-warehouse or non-Harbour building is routed to Industrial Harbour architecture
+  for (const b of layout.buildings) {
+    if (!expectedIds.includes(b.id)) {
+      assert.equal(
+        isIndustrialHarbourWarehouseSpec(b),
+        false,
+        `Building ${b.id} must not be routed to Industrial Harbour architecture`,
+      );
+    }
+  }
+
+  // Verify 3 distinct industrial identities, roof types, palettes, and frontage orientations
+  const profiles = harbourWarehouses.map((spec) => ({
+    spec,
+    profile: resolveIndustrialHarbourProfile(spec),
+  }));
+  assert.equal(
+    new Set(profiles.map((p) => p.profile.archetype)).size,
+    3,
+    'All 3 Industrial Harbour warehouses must have distinct archetypes',
+  );
+  assert.equal(
+    new Set(profiles.map((p) => p.profile.roofType)).size,
+    3,
+    'All 3 Industrial Harbour warehouses must have distinct roof silhouettes',
+  );
+  assert.equal(
+    new Set(profiles.map((p) => p.profile.wallBaseTint)).size,
+    3,
+    'All 3 Industrial Harbour warehouses must have distinct cladding palettes',
+  );
+
+  const byId = new Map(profiles.map((p) => [p.spec.id, p]));
+  const wh1 = byId.get('harbour_wh_1')!;
+  const wh2 = byId.get('harbour_wh_2')!;
+  const westWh = byId.get('west_harbour_1')!;
+
+  assert.equal(wh1.profile.archetype, 'freight_distribution_terminal');
+  assert.equal(wh1.profile.primaryFrontage, '+z');
+  assert.equal(wh1.profile.loadingBayCount, 3);
+  assert.equal(wh1.profile.hasWallXBracing, true);
+
+  assert.equal(wh2.profile.archetype, 'marine_cargo_depot');
+  assert.equal(wh2.profile.primaryFrontage, '-z');
+  assert.equal(wh2.profile.loadingBayCount, 2);
+  assert.equal(wh2.profile.hasClerestoryWindows, true);
+
+  assert.equal(westWh.profile.archetype, 'cold_storage_logistics');
+  assert.equal(westWh.profile.primaryFrontage, '+x');
+  assert.equal(westWh.profile.loadingBayCount, 4);
+  assert.equal(westWh.profile.claddingOrientation, 'horizontal');
+  assert.equal(westWh.profile.hasRefrigerationPlant, true);
+
+  // Verify every custom procedural Industrial Harbour geometry has finite positions,
+  // finite bounding sphere, and strictly unit-length outward vertex normals
+  const customGeos: Array<[string, THREE.BufferGeometry]> = [
+    ['industrialGableRoof', createIndustrialGableRoofGeometry()],
+    ['sawtoothClerestoryRoof', createSawtoothClerestoryRoofGeometry()],
+    ['slopedDockCanopy', createSlopedDockCanopyGeometry()],
+    ['steelGussetBracket', createSteelGussetBracketGeometry()],
+    ['roofVentCowl', createRoofVentCowlGeometry()],
+  ];
+
+  for (const [label, geo] of customGeos) {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 18, `${label} must have non-trivial procedural vertex count`);
+    assert.ok(norm && norm.count === pos.count, `${label} must have vertex normals matching positions`);
+    assert.ok(
+      geo.boundingSphere && Number.isFinite(geo.boundingSphere.radius) && geo.boundingSphere.radius > 0,
+      `${label} must have valid positive boundingSphere`,
+    );
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${label} vertex ${i} position must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(len > 0.85 && len < 1.15, `${label} vertex ${i} normal must be unit-length, got ${len}`);
+    }
+    geo.dispose();
+  }
+});
+
+test('Phase 2D-5: buildCityWorld builds Industrial Harbour with clearances vs roads/containers/cranes, InstancedMesh batching, lighting calibration, and zero regressions', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const scene = new THREE.Scene();
+  const world = buildCityWorld(layout, mockTextures);
+  const weather = new TimeAndWeatherSystem(scene, false);
+
+  const ih = world.industrialHarbourArchitectureStats;
+  assert.equal(ih.warehouseCount, 3, 'buildCityWorld must build all 3 Industrial Harbour warehouses');
+  assert.equal(ih.archetypesUsed.length, 3, 'all 3 Industrial Harbour warehouse archetypes must be used');
+  assert.equal(ih.totalLoadingBays, 9, 'Industrial Harbour must build 3 + 2 + 4 = 9 loading bays');
+  assert.ok(
+    ih.instancedBatches >= 9,
+    `Industrial Harbour must batch repeated details into InstancedMeshes, got ${ih.instancedBatches}`,
+  );
+  assert.ok(
+    ih.totalFacadeInstances >= 160,
+    `Industrial Harbour must render rich structural instances, got ${ih.totalFacadeInstances}`,
+  );
+  assert.ok(
+    ih.sharedMaterialCount <= 20,
+    `Industrial Harbour shared PBR pool should stay compact, got ${ih.sharedMaterialCount}`,
+  );
+  assert.equal(ih.signageMaterialCount, 3, 'Each of the 3 warehouses must have its own crisp facility signage');
+
+  // Verify named scene groups, mounted signage, grounded heights, and strict clearances
+  const containerColliders = layout.colliders.filter((c) => c.id.startsWith('container_'));
+  assert.equal(containerColliders.length, 7, 'All 7 Harbour container stack colliders must remain unchanged');
+  assert.equal(layout.containers.length, 12, 'All 12 stacked shipping containers must remain unchanged');
+
+  // Both existing gantry crane leg envelopes: centered at (-124, 44) and (-124, 82), legs ±4.5m
+  const gantryCraneBoxes = [
+    { id: 'crane_north', minX: -128.6, maxX: -119.4, minZ: 39.4, maxZ: 48.6 },
+    { id: 'crane_south', minX: -128.6, maxX: -119.4, minZ: 77.4, maxZ: 86.6 },
+  ];
+
+  for (const wh of ih.warehouses) {
+    const spec = layout.buildings.find((b) => b.id === wh.id)!;
+    assert.ok(wh.signMeshCount >= 2, `${wh.id} must have crisp readable signage mounted`);
+    assert.ok(
+      Number.isFinite(wh.pinnacleY) && wh.pinnacleY > spec.height + 1.5,
+      `${wh.id} must have grounded rooftop architecture rising above base shell`,
+    );
+    const group = world.root.getObjectByName(`industrial_harbour_${wh.id}`);
+    assert.ok(group, `Scene graph must contain named group industrial_harbour_${wh.id}`);
+
+    // Verify zero overlap with any shipping container collider
+    for (const c of containerColliders) {
+      const overlapX = wh.worldBounds.minX < c.maxX && wh.worldBounds.maxX > c.minX;
+      const overlapZ = wh.worldBounds.minZ < c.maxZ && wh.worldBounds.maxZ > c.minZ;
+      assert.equal(
+        overlapX && overlapZ,
+        false,
+        `${wh.id} architectural bounds must not overlap shipping container ${c.id}`,
+      );
+    }
+
+    // Verify zero overlap with either gantry crane
+    for (const cr of gantryCraneBoxes) {
+      const overlapX = wh.worldBounds.minX < cr.maxX && wh.worldBounds.maxX > cr.minX;
+      const overlapZ = wh.worldBounds.minZ < cr.maxZ && wh.worldBounds.maxZ > cr.minZ;
+      assert.equal(
+        overlapX && overlapZ,
+        false,
+        `${wh.id} architectural bounds must not intersect ${cr.id}`,
+      );
+    }
+  }
+
+  // Specific road & sidewalk clearance checks
+  const wh1Summary = ih.warehouses.find((w) => w.id === 'harbour_wh_1')!;
+  const wh2Summary = ih.warehouses.find((w) => w.id === 'harbour_wh_2')!;
+  const westWhSummary = ih.warehouses.find((w) => w.id === 'west_harbour_1')!;
+
+  assert.ok(wh1Summary.worldBounds.minZ > 43.0, 'harbour_wh_1 north features must stay clear of z=42.5 sidewalk');
+  assert.ok(wh1Summary.worldBounds.maxZ < 66.0, 'harbour_wh_1 south loading dock must leave wide container apron');
+  assert.ok(wh2Summary.worldBounds.maxZ < 84.5, 'harbour_wh_2 south features must stay clear of z=85.5 sidewalk');
+  assert.ok(wh2Summary.worldBounds.minZ > 58.0, 'harbour_wh_2 north loading dock must stay clear of north container');
+  assert.ok(
+    westWhSummary.worldBounds.maxX < -107.0,
+    'west_harbour_1 east loading bays must stay clear of x=-106.5 sidewalk edge',
+  );
+  assert.ok(
+    westWhSummary.worldBounds.maxZ < 38.0,
+    'west_harbour_1 south facade must maintain generous clearance from north gantry crane at z=40',
+  );
+
+  // Verify all Industrial Harbour InstancedMesh batches have finite bounding spheres & finite instance matrices
+  const ihInstMeshes: THREE.InstancedMesh[] = [];
+  const matCheck = new THREE.Matrix4();
+  world.root.traverse((obj) => {
+    if (obj instanceof THREE.InstancedMesh && obj.name.startsWith('industrial_harbour_inst_')) {
+      ihInstMeshes.push(obj);
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matCheck);
+        for (const elem of matCheck.elements) {
+          assert.ok(Number.isFinite(elem), `${obj.name} instance ${i} has non-finite matrix element`);
+        }
+      }
+    }
+  });
+  assert.equal(
+    ihInstMeshes.length,
+    ih.instancedBatches,
+    'All reported Industrial Harbour InstancedMesh batches must exist in scene graph',
+  );
+
+  // Verify daytime, golden hour, nighttime, and rainy-night lighting calibration
+  weather.setTimePreset(TimePreset.Afternoon);
+  weather.setWeather(WeatherType.Clear, false);
+  weather.update(0.05, -72, 62, world, 0, 0);
+  assert.ok(
+    world.emissiveBuildingMaterials.filter((m) => m.emissiveMap != null).every((m) => m.emissiveIntensity <= 0.14),
+    'Daytime industrial clerestory glazing and signage must stay calm without artificial glow',
+  );
+
+  weather.setTimePreset(TimePreset.Night);
+  weather.setWeather(WeatherType.Rain, false);
+  for (let i = 0; i < 40; i++) {
+    weather.update(0.05, -72, 62, world, 0, 0);
+  }
+  assert.ok(
+    world.emissiveBuildingMaterials.filter((m) => m.emissiveMap != null).every((m) => m.emissiveIntensity >= 1.35),
+    'Nighttime industrial clerestory glazing and signage must remain clearly illuminated',
+  );
+  assert.ok(weather.roadWetness > 0.5, 'Rainy Harbour weather must drive wet road reflections');
+
+  // Verify zero regression on all 4 prior Phase 2D architectural districts
+  assert.ok(world.downtownArchitectureStats.skyscraperCount >= 6, 'Downtown skyscrapers must remain intact');
+  assert.equal(world.downtownArchitectureStats.landmarkCount, 1, 'Vice Tower landmark must remain intact');
+  assert.equal(world.oceanDriveArchitectureStats.hotelCount, 11, 'All 11 Ocean Drive hotels must remain intact');
+  assert.equal(world.coralHeightsArchitectureStats.totalCount, 9, 'All 9 Coral Heights residential buildings must remain intact');
+  assert.equal(world.neonMileArchitectureStats.totalCount, 5, 'All 5 Neon Mile venues must remain intact');
+
+  weather.dispose();
+  world.dispose();
+});
+
 
 
 
