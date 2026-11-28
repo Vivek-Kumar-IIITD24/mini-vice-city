@@ -37,6 +37,10 @@ import {
   buildPalmTreeAssets,
   PalmTreeAssetsStats,
 } from './palmTreeAssets';
+import {
+  buildCoastalShorelineAssets,
+  CoastalShorelineStats,
+} from './coastalShorelineAssets';
 
 export interface TrafficSignalVisual {
   intersectionX: number;
@@ -81,6 +85,7 @@ export interface BuiltCityWorld {
   neonMileArchitectureStats: NeonMileArchitectureStats;
   industrialHarbourArchitectureStats: IndustrialHarbourArchitectureStats;
   palmTreeAssetsStats: PalmTreeAssetsStats;
+  coastalShorelineStats: CoastalShorelineStats;
   dispose: () => void;
 }
 
@@ -216,22 +221,37 @@ export function buildCityWorld(
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
-           float beachDist = max(0.0, vOceanWorldPos.x - 148.0);
-           float eastCoastMask = smoothstep(128.0, 150.0, vOceanWorldPos.x) * (1.0 - smoothstep(132.0, 175.0, abs(vOceanWorldPos.z)));
-           float shallowFactor = (1.0 - smoothstep(0.0, 52.0, beachDist)) * eastCoastMask;
-           vec3 shallowDay = vec3(0.038, 0.36, 0.44);
-           vec3 deepDay = vec3(0.012, 0.095, 0.19);
-           vec3 dayWater = mix(deepDay, shallowDay, shallowFactor);
-           vec3 stormWater = vec3(0.015, 0.032, 0.052);
-           vec3 nightWater = mix(vec3(0.004, 0.012, 0.028), vec3(0.009, 0.032, 0.052), shallowFactor * 0.5);
-           vec3 waterAlbedo = mix(mix(dayWater, stormWater, uStormDarkness * 0.72), nightWater, uNightFactor);
+           // Organic contoured shoreline matching coastalShorelineAssets.ts
+           float shoreContourX = 150.2
+             + sin(vOceanWorldPos.z * 0.042 + 0.6) * 1.45
+             + sin(vOceanWorldPos.z * 0.115 - 1.1) * 0.72
+             + cos(vOceanWorldPos.z * 0.23 + 0.4) * 0.32;
+           float beachDist = max(0.0, vOceanWorldPos.x - shoreContourX);
+           float eastCoastMask = smoothstep(134.0, 150.5, vOceanWorldPos.x) * (1.0 - smoothstep(132.0, 178.0, abs(vOceanWorldPos.z)));
 
-           // Soft animated coastal surf foam along the Ocean Drive beach edge
-           float surfWave = sin(vOceanWorldPos.z * 0.16 + uTime * 2.1 + sin(vOceanWorldPos.x * 0.25) * 1.4);
-           float surfBand = (1.0 - smoothstep(1.5, 11.5, beachDist)) * eastCoastMask;
-           float surfFoam = surfBand * smoothstep(-0.15, 0.85, surfWave) * (0.48 + uStormDarkness * 0.25);
-           vec3 foamTint = mix(vec3(0.74, 0.86, 0.90), vec3(0.14, 0.20, 0.30), uNightFactor * 0.82);
-           diffuseColor.rgb = mix(waterAlbedo, foamTint, clamp(surfFoam, 0.0, 0.72));`,
+           // Multi-band Miami shallow turquoise shoal -> mid cyan-teal -> deep Atlantic cobalt
+           float innerShallow = (1.0 - smoothstep(0.0, 22.0, beachDist)) * eastCoastMask;
+           float midShallow = (1.0 - smoothstep(8.0, 56.0, beachDist)) * eastCoastMask;
+           vec3 shallowInner = vec3(0.058, 0.56, 0.56);
+           vec3 shallowMid = vec3(0.024, 0.31, 0.44);
+           vec3 deepDay = vec3(0.010, 0.088, 0.195);
+           vec3 dayWater = mix(deepDay, shallowMid, midShallow);
+           dayWater = mix(dayWater, shallowInner, innerShallow * 0.88);
+           // Subtle warm golden-hour & sunset scatter across coastal shallows
+           float lowSunFactor = smoothstep(0.45, 0.04, uSunDir.y) * smoothstep(-0.04, 0.08, uSunDir.y) * (1.0 - uNightFactor);
+           dayWater = mix(dayWater, dayWater * (uSunColor * 0.48 + vec3(0.58)), lowSunFactor * 0.24 * midShallow);
+
+           vec3 stormWater = mix(vec3(0.014, 0.030, 0.050), vec3(0.026, 0.072, 0.092), innerShallow * 0.65);
+           vec3 nightWater = mix(vec3(0.004, 0.012, 0.028), vec3(0.010, 0.036, 0.058), midShallow * 0.52);
+           vec3 waterAlbedo = mix(mix(dayWater, stormWater, uStormDarkness * 0.72 + uCloudCoverage * 0.16), nightWater, uNightFactor);
+
+           // Complementary offshore broken surf wave bands synchronized with uTime & shoreline contour
+           float surfWaveA = sin(vOceanWorldPos.z * 0.14 - uTime * 1.45 + sin(vOceanWorldPos.x * 0.22) * 1.6);
+           float surfWaveB = cos(vOceanWorldPos.z * 0.27 + uTime * 1.15 - vOceanWorldPos.x * 0.18);
+           float surfBand = smoothstep(1.0, 4.5, beachDist) * (1.0 - smoothstep(6.5, 18.0, beachDist)) * eastCoastMask;
+           float surfFoam = surfBand * smoothstep(0.18, 0.88, surfWaveA * 0.65 + surfWaveB * 0.35) * (0.42 + uStormDarkness * 0.26);
+           vec3 foamTint = mix(vec3(0.80, 0.90, 0.92), vec3(0.14, 0.21, 0.31), uNightFactor * 0.84);
+           diffuseColor.rgb = mix(waterAlbedo, foamTint, clamp(surfFoam, 0.0, 0.62));`,
         )
         .replace(
           '#include <roughnessmap_fragment>',
@@ -321,62 +341,15 @@ export function buildCityWorld(
   groundMesh.receiveShadow = true;
   root.add(groundMesh);
 
-  // East Beachfront Golden Sand Strip (Ocean Drive Beach: x = 118..154)
-  const sandTex = textures.sandMap.clone();
-  sandTex.needsUpdate = true;
-  sandTex.repeat.set(6, 36);
-  disposables.push(sandTex);
-
-  const beachGeo = new THREE.PlaneGeometry(40, 274);
-  beachGeo.rotateX(-Math.PI / 2);
-  const beachMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    map: sandTex,
-    roughness: 0.92,
-    metalness: 0.0,
+  // Phase 2E-2: Realistic Golden Beach Sand (Dry->Damp->Wet), Contoured Layered Surf Foam,
+  // Translucent Shallow-Water Veil, Detailed Wooden Boardwalk, Marina Overlook Pier & Coastal Details
+  const coastalAssets = buildCoastalShorelineAssets({
+    root,
+    oceanUniforms,
+    disposables,
+    maxAnisotropy: textures.sandMap.anisotropy || 4,
   });
-  disposables.push(beachGeo, beachMat);
-  const beachMesh = new THREE.Mesh(beachGeo, beachMat);
-  beachMesh.position.set(137, -0.06, 0);
-  beachMesh.rotation.z = -0.025; // slopes gently into Atlantic surf
-  beachMesh.receiveShadow = true;
-  root.add(beachMesh);
-
-  // Shoreline foam band
-  const foamGeo = new THREE.PlaneGeometry(5, 274);
-  foamGeo.rotateX(-Math.PI / 2);
-  const foamMat = new THREE.MeshStandardMaterial({
-    color: 0xe0f7fa,
-    roughness: 0.45,
-    transparent: true,
-    opacity: 0.65,
-    depthWrite: false,
-  });
-  disposables.push(foamGeo, foamMat);
-  const foamMesh = new THREE.Mesh(foamGeo, foamMat);
-  foamMesh.position.set(154, -0.45, 0);
-  root.add(foamMesh);
-
-  // Ocean Drive Wooden Boardwalk Promenade (x = 109..118)
-  const boardGeo = new THREE.BoxGeometry(9.5, 0.16, 252);
-  const boardMat = new THREE.MeshStandardMaterial({
-    color: 0xc9a982,
-    roughness: 0.78,
-    metalness: 0.05,
-  });
-  disposables.push(boardGeo, boardMat);
-  const boardwalk = new THREE.Mesh(boardGeo, boardMat);
-  boardwalk.position.set(113.5, 0.08, 0);
-  boardwalk.receiveShadow = true;
-  root.add(boardwalk);
-
-  // Marina Overlook Pier at South Ocean Drive (z = 96, x = 118..156)
-  const pierGeo = new THREE.BoxGeometry(38, 0.45, 12);
-  const pierMesh = new THREE.Mesh(pierGeo, boardMat);
-  pierMesh.position.set(136, 0.25, 96);
-  pierMesh.receiveShadow = true;
-  root.add(pierMesh);
-  disposables.push(pierGeo);
+  const coastalShorelineStats = coastalAssets.stats;
 
   // Coastal Seawall Low Parapet on West/North/South edges (natural marina railing, not an indoor wall!)
   const seawallMat = new THREE.MeshStandardMaterial({
@@ -972,7 +945,7 @@ export function buildCityWorld(
   for (const lz of [-36, 36]) {
     const lg = new THREE.Group();
     lg.position.set(130, 0, lz);
-    const stilts = new THREE.Mesh(unitBoxGeo, boardMat);
+    const stilts = new THREE.Mesh(unitBoxGeo, coastalAssets.boardwalkTimberMaterial);
     stilts.scale.set(2.8, 2.4, 2.8);
     stilts.position.y = 1.2;
     const cabin = new THREE.Mesh(unitBoxGeo, towerMat);
@@ -1168,6 +1141,7 @@ export function buildCityWorld(
     neonMileArchitectureStats,
     industrialHarbourArchitectureStats,
     palmTreeAssetsStats,
+    coastalShorelineStats,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

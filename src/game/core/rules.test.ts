@@ -188,6 +188,25 @@ import {
   createSabalFanLeafGeometry,
   hasCoconutCluster,
 } from '../world/palmTreeAssets';
+import {
+  BEACH_ACCESS_Z,
+  PRESERVED_BEACH_FOOTPRINT,
+  PRESERVED_BOARDWALK_FOOTPRINT,
+  PRESERVED_PIER_FOOTPRINT,
+  SAND_MOISTURE_CONFIG,
+  createBeachSandTextureSet,
+  createBeveledTimberPostGeometry,
+  createCoastalBeachGeometry,
+  createCoastalBoardwalkWoodTextures,
+  createContouredShorelineFoamGeometry,
+  createMooringCleatGeometry,
+  createShallowWaterVeilGeometry,
+  createSurfFoamLaceTexture,
+  evaluateBeachSurfaceWorldY,
+  evaluateSandWetnessAt,
+  evaluateShallowWaterFactor,
+  sampleShorelineContourX,
+} from '../world/coastalShorelineAssets';
 import type { ProceduralTextureSet } from '../world/textures';
 import {
   applyRoadWetness,
@@ -4862,6 +4881,271 @@ test('Phase 2E-1: BuiltCityWorld integrates instanced multi-species palms, prese
   // 6. Clean resource disposal without throwing
   assert.doesNotThrow(() => world.dispose(), 'world.dispose() must cleanly release all palm geometries, materials, textures, and InstancedMeshes');
 });
+
+test('Phase 2E-2: coastal sand textures, dry-to-wet moisture curve, organic shoreline contour, shallow water gradient, and custom coastal geometries are valid and bounded', () => {
+  // 1. Procedural textures (Node fallback DataTexture or CanvasTexture) contain finite valid image data & non-zero dimensions
+  const sandTex = createBeachSandTextureSet(4);
+  const foamTex = createSurfFoamLaceTexture(4);
+  const woodTex = createCoastalBoardwalkWoodTextures(4);
+
+  const checkTexValid = (tex: THREE.Texture, label: string) => {
+    const img = tex.image as { width?: number; height?: number; data?: Uint8Array } | undefined;
+    assert.ok(img && (img.width ?? 0) >= 8 && (img.height ?? 0) >= 8, `${label} must have valid non-zero dimensions`);
+    if (img.data) {
+      assert.equal(img.data.length, (img.width ?? 0) * (img.height ?? 0) * 4, `${label} RGBA buffer length must match dimensions`);
+      let nonZero = 0;
+      for (let i = 0; i < img.data.length; i += 4) {
+        assert.ok(Number.isFinite(img.data[i]), `${label} channel must be finite`);
+        if (img.data[i] > 0 || img.data[i + 1] > 0 || img.data[i + 2] > 0) nonZero++;
+      }
+      assert.ok(nonZero > 0, `${label} must not be empty black data`);
+    }
+  };
+
+  checkTexValid(sandTex.albedo, 'sandAlbedo');
+  checkTexValid(sandTex.bump, 'sandBump');
+  checkTexValid(sandTex.roughness, 'sandRoughness');
+  checkTexValid(sandTex.worldNoise, 'sandWorldNoise');
+  checkTexValid(foamTex.texture, 'surfFoamLace');
+  checkTexValid(woodTex.albedo, 'boardwalkWoodAlbedo');
+  checkTexValid(woodTex.bump, 'boardwalkWoodBump');
+  checkTexValid(woodTex.roughness, 'boardwalkWoodRoughness');
+
+  sandTex.dispose();
+  foamTex.texture.dispose();
+  woodTex.dispose();
+
+  // 2. Dry -> Damp -> Wet sand moisture config & evaluator are finite, monotonic, and rain-responsive
+  assert.ok(
+    SAND_MOISTURE_CONFIG.dryRoughness > SAND_MOISTURE_CONFIG.dampRoughness &&
+      SAND_MOISTURE_CONFIG.dampRoughness > SAND_MOISTURE_CONFIG.wetRoughness &&
+      SAND_MOISTURE_CONFIG.wetRoughness >= 0.12,
+    'Sand roughness must decrease smoothly from dry -> damp -> wet shoreline',
+  );
+  assert.ok(
+    SAND_MOISTURE_CONFIG.rainDarkenFactor > 0.5 && SAND_MOISTURE_CONFIG.rainDarkenFactor < 1.0,
+    'Rain darken factor must darken sand realistically without turning black',
+  );
+
+  const drySample = evaluateSandWetnessAt(126, 0, 0);
+  const dampSample = evaluateSandWetnessAt(146.5, 0, 0);
+  const wetSample = evaluateSandWetnessAt(151.0, 0, 0);
+  const dryRainSample = evaluateSandWetnessAt(126, 0, 1);
+
+  assert.ok(
+    drySample.dampFactor < dampSample.dampFactor && dampSample.wetFactor < wetSample.wetFactor,
+    'Sand moisture factors must rise smoothly toward shoreline',
+  );
+  assert.ok(
+    drySample.effectiveRoughness > dampSample.effectiveRoughness &&
+      dampSample.effectiveRoughness > wetSample.effectiveRoughness,
+    'Sand effective roughness must drop smoothly from dry -> damp -> wet',
+  );
+  assert.ok(
+    dryRainSample.effectiveRoughness < drySample.effectiveRoughness,
+    'Rain must reduce dry sand roughness realistically',
+  );
+
+  // 3. Organic shoreline contour varies naturally across Z (never a flat straight line)
+  const contourSamples: number[] = [];
+  for (let z = -120; z <= 120; z += 12) {
+    const sx = sampleShorelineContourX(z);
+    assert.ok(Number.isFinite(sx) && sx >= 146 && sx <= 155, `Shoreline contour X=${sx} must stay along east beach`);
+    contourSamples.push(sx);
+  }
+  const contourSpan = Math.max(...contourSamples) - Math.min(...contourSamples);
+  assert.ok(contourSpan >= 2.2, `Shoreline contour must vary organically across Z (>= 2.2m), got ${contourSpan.toFixed(2)}m`);
+
+  // 4. Shallow-to-deep water gradient stays bounded in [0, 1], peaking near shore and decaying offshore
+  const nearShoreShallow = evaluateShallowWaterFactor(sampleShorelineContourX(0) + 2, 0);
+  const midShoalShallow = evaluateShallowWaterFactor(sampleShorelineContourX(0) + 22, 0);
+  const deepOceanShallow = evaluateShallowWaterFactor(sampleShorelineContourX(0) + 80, 0);
+  assert.ok(nearShoreShallow >= 0.85 && nearShoreShallow <= 1.0, `Near-shore shallow factor must peak near 1, got ${nearShoreShallow}`);
+  assert.ok(midShoalShallow > deepOceanShallow && midShoalShallow < nearShoreShallow, 'Shallow factor must transition smoothly offshore');
+  assert.ok(deepOceanShallow >= 0 && deepOceanShallow <= 0.05, `Deep offshore shallow factor must decay near 0, got ${deepOceanShallow}`);
+
+  // 5. Beach surface Y descends smoothly from boardwalk edge into seabed
+  assert.ok(
+    evaluateBeachSurfaceWorldY(120, 0) > evaluateBeachSurfaceWorldY(142, 0) &&
+      evaluateBeachSurfaceWorldY(142, 0) > evaluateBeachSurfaceWorldY(155, 0),
+    'Beach profile must slope smoothly seaward into Atlantic surf',
+  );
+
+  // 6. All custom coastal geometries have finite vertices and valid unit-length normals
+  const assertCoastalGeoValid = (geo: THREE.BufferGeometry, name: string) => {
+    const pos = geo.getAttribute('position');
+    const norm = geo.getAttribute('normal');
+    assert.ok(pos && pos.count >= 24, `${name} must contain sculpted vertices`);
+    assert.ok(norm && norm.count === pos.count, `${name} must contain vertex normals`);
+    assert.ok(geo.boundingBox && geo.boundingSphere && Number.isFinite(geo.boundingSphere.radius), `${name} must compute bounds`);
+    for (let i = 0; i < pos.count; i++) {
+      assert.ok(
+        Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)),
+        `${name} vertex ${i} must be finite`,
+      );
+      const len = Math.hypot(norm.getX(i), norm.getY(i), norm.getZ(i));
+      assert.ok(Number.isFinite(len) && len >= 0.85 && len <= 1.15, `${name} normal ${i} must be unit length, got ${len}`);
+    }
+  };
+
+  const beachGeo = createCoastalBeachGeometry();
+  const foamGeo = createContouredShorelineFoamGeometry();
+  const veilGeo = createShallowWaterVeilGeometry();
+  const postGeo = createBeveledTimberPostGeometry();
+  const cleatGeo = createMooringCleatGeometry();
+
+  assertCoastalGeoValid(beachGeo, 'coastal_beach');
+  assertCoastalGeoValid(foamGeo, 'contoured_surf_foam');
+  assertCoastalGeoValid(veilGeo, 'shallow_water_veil');
+  assertCoastalGeoValid(postGeo, 'beveled_timber_post');
+  assertCoastalGeoValid(cleatGeo, 'mooring_cleat');
+
+  // Verify contoured foam mesh inland edge genuinely undulates across Z (not a straight rectangle!)
+  const foamPos = foamGeo.getAttribute('position');
+  const foamUv = foamGeo.getAttribute('uv');
+  const inlandXs: number[] = [];
+  for (let i = 0; i < foamPos.count; i++) {
+    if (foamUv.getX(i) < 0.001) inlandXs.push(foamPos.getX(i));
+  }
+  const inlandSpan = Math.max(...inlandXs) - Math.min(...inlandXs);
+  assert.ok(inlandSpan >= 2.2, `Contoured foam ribbon inland edge must undulate organically (>= 2.2m), got ${inlandSpan.toFixed(2)}m`);
+
+  beachGeo.dispose();
+  foamGeo.dispose();
+  veilGeo.dispose();
+  postGeo.dispose();
+  cleatGeo.dispose();
+});
+
+test('Phase 2E-2: BuiltCityWorld integrates realistic beach, animated shoreline surf, boardwalk, Marina Overlook Pier, and preserves palms, lifeguard towers & all Phase 2D districts', () => {
+  const layout = generateCityLayout();
+  const mockTextures = createMockTextures();
+  const world = buildCityWorld(layout, mockTextures);
+  const stats = world.coastalShorelineStats;
+
+  // 1. Exact preserved footprints for Beach, Boardwalk, and Marina Overlook Pier
+  assert.deepEqual(stats.beachFootprint, PRESERVED_BEACH_FOOTPRINT);
+  assert.deepEqual(stats.boardwalkFootprint, PRESERVED_BOARDWALK_FOOTPRINT);
+  assert.deepEqual(stats.pierFootprint, PRESERVED_PIER_FOOTPRINT);
+
+  const beachMesh = world.root.getObjectByName('coastal_beach_sand') as THREE.Mesh | undefined;
+  const foamMesh = world.root.getObjectByName('coastal_shoreline_surf_foam') as THREE.Mesh | undefined;
+  const veilMesh = world.root.getObjectByName('coastal_shallow_water_veil') as THREE.Mesh | undefined;
+  const boardwalkMesh = world.root.getObjectByName('coastal_boardwalk_deck') as THREE.Mesh | undefined;
+  const pierMesh = world.root.getObjectByName('coastal_marina_pier_deck') as THREE.Mesh | undefined;
+
+  assert.ok(beachMesh instanceof THREE.Mesh, 'Beach sand mesh must be mounted');
+  assert.ok(foamMesh instanceof THREE.Mesh, 'Contoured shoreline surf foam mesh must be mounted');
+  assert.ok(veilMesh instanceof THREE.Mesh, 'Shallow-water turquoise veil mesh must be mounted');
+  assert.ok(boardwalkMesh instanceof THREE.Mesh, 'Boardwalk deck mesh must be mounted');
+  assert.ok(pierMesh instanceof THREE.Mesh, 'Marina Overlook Pier deck mesh must be mounted');
+
+  assert.equal(beachMesh.position.x, 137);
+  assert.equal(beachMesh.position.y, -0.06);
+  assert.equal(beachMesh.position.z, 0);
+  assert.ok(Math.abs(beachMesh.rotation.z - -0.025) < 1e-6);
+  assert.equal((beachMesh.material as THREE.MeshStandardMaterial).metalness, 0, 'Beach sand material must be strictly non-metallic');
+
+  assert.equal(boardwalkMesh.position.x, 113.5);
+  assert.equal(boardwalkMesh.position.y, 0.08);
+  assert.equal(boardwalkMesh.position.z, 0);
+  assert.equal(pierMesh.position.x, 136);
+  assert.equal(pierMesh.position.y, 0.25);
+  assert.equal(pierMesh.position.z, 96);
+
+  // 2. Surf foam & shallow water veil shaders reference the exact live world.oceanUniforms.uTime object
+  const foamMat = foamMesh.material as THREE.ShaderMaterial;
+  const veilMat = veilMesh.material as THREE.ShaderMaterial;
+  assert.strictEqual(foamMat.uniforms.uTime, world.oceanUniforms.uTime, 'Surf foam must share live oceanUniforms.uTime');
+  assert.strictEqual(veilMat.uniforms.uTime, world.oceanUniforms.uTime, 'Shallow veil must share live oceanUniforms.uTime');
+  assert.strictEqual(foamMat.uniforms.uNightFactor, world.oceanUniforms.uNightFactor, 'Surf foam must respond to nightFactor');
+
+  // 3. Instanced coastal batches (boardwalk planks, beams, posts, rails, pier pilings, beams, cleats, ropes, hardware, lanterns)
+  const coastalInstMeshes: THREE.InstancedMesh[] = [];
+  const matCheck = new THREE.Matrix4();
+  const posCheck = new THREE.Vector3();
+  world.root.traverse((obj) => {
+    if (obj instanceof THREE.InstancedMesh && obj.name.startsWith('coastal_inst_')) {
+      coastalInstMeshes.push(obj);
+      assert.ok(
+        obj.boundingSphere && Number.isFinite(obj.boundingSphere.radius) && obj.boundingSphere.radius > 0,
+        `${obj.name} must have computed finite boundingSphere`,
+      );
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, matCheck);
+        for (const elem of matCheck.elements) {
+          assert.ok(Number.isFinite(elem), `${obj.name} instance ${i} has non-finite matrix element`);
+        }
+      }
+    }
+  });
+  assert.equal(coastalInstMeshes.length, stats.instancedBatches, 'All coastal InstancedMesh batches must be mounted');
+  assert.ok(stats.instancedBatches >= 8, `Expected >= 8 instanced coastal batches, got ${stats.instancedBatches}`);
+  assert.ok(stats.boardwalkPlankCount >= 200, `Expected >= 200 instanced plank/border details, got ${stats.boardwalkPlankCount}`);
+  assert.ok(stats.pierStructuralInstanceCount >= 50, `Expected >= 50 pier structural instances (pilings/beams/cleats/ropes), got ${stats.pierStructuralInstanceCount}`);
+  assert.ok(stats.coastalDetailCount >= 10, `Expected authentic coastal details (ramps/showers/markers), got ${stats.coastalDetailCount}`);
+
+  // 4. Verify boardwalk interior pedestrian corridor (x ∈ [109.2, 117.8]) and pier west approach are completely unobstructed!
+  const postsBatch = world.root.getObjectByName('coastal_inst_timber_posts') as THREE.InstancedMesh | undefined;
+  assert.ok(postsBatch instanceof THREE.InstancedMesh, 'Timber guardrail posts must be instanced');
+  let postsInPierApproach = 0;
+  for (let i = 0; i < postsBatch.count; i++) {
+    postsBatch.getMatrixAt(i, matCheck);
+    posCheck.setFromMatrixPosition(matCheck);
+    // Boardwalk interior walking corridor must have zero vertical posts
+    assert.ok(
+      !(posCheck.x > 109.2 && posCheck.x < 117.8),
+      `Guardrail post at x=${posCheck.x.toFixed(2)}, z=${posCheck.z.toFixed(2)} must not block boardwalk corridor`,
+    );
+    // Marina Pier west entrance (x ≈ 118.1, z ∈ [90.5, 101.5]) must remain open
+    if (posCheck.x >= 117.5 && posCheck.x <= 119.0 && posCheck.z > 90.5 && posCheck.z < 101.5) {
+      postsInPierApproach++;
+    }
+    // Beach access ramp openings must remain open along east guardrail (x ≈ 118.1)
+    if (Math.abs(posCheck.x - 118.1) < 0.2) {
+      for (const az of BEACH_ACCESS_Z) {
+        assert.ok(Math.abs(posCheck.z - az) >= 2.2, `Beach access opening at z=${az} must remain clear of posts`);
+      }
+    }
+  }
+  assert.equal(postsInPierApproach, 0, 'Marina Overlook Pier west boardwalk approach must stay completely open');
+
+  // 5. Verify Marina Overlook Pier pilings, cleats, and ropes are placed accurately
+  const pilingsBatch = world.root.getObjectByName('coastal_inst_pier_pilings') as THREE.InstancedMesh | undefined;
+  const cleatsBatch = world.root.getObjectByName('coastal_inst_pier_cleats') as THREE.InstancedMesh | undefined;
+  const ropesBatch = world.root.getObjectByName('coastal_inst_pier_ropes') as THREE.InstancedMesh | undefined;
+  assert.ok(pilingsBatch && pilingsBatch.count >= 24, 'Pier must have heavy support pilings');
+  assert.ok(cleatsBatch && cleatsBatch.count >= 8, 'Pier must have cast-iron mooring cleats');
+  assert.ok(ropesBatch && ropesBatch.count >= 4, 'Pier corner pilings must have coiled mooring ropes');
+
+  // 6. Verify both Ocean Drive lifeguard towers at (130, 0, ±36) remain intact
+  let lifeguardTowersFound = 0;
+  for (const child of world.root.children) {
+    if (child instanceof THREE.Group && child.children.length === 3) {
+      if (Math.abs(child.position.x - 130) < 1e-4 && Math.abs(Math.abs(child.position.z) - 36) < 1e-4) {
+        lifeguardTowersFound++;
+      }
+    }
+  }
+  assert.equal(lifeguardTowersFound, 2, 'Both Ocean Drive lifeguard towers at (130, 0, ±36) must remain preserved');
+
+  // 7. Verify Phase 2E-1 palms (all 27 & 4 species) and all 5 Phase 2D architectural districts remain intact
+  const expectedPalms = layout.trees.filter((t) => t.kind === 'palm');
+  assert.equal(world.palmTreeAssetsStats.totalPalmCount, expectedPalms.length, 'All 27 palm trees must remain preserved');
+  for (const sp of ALL_PALM_SPECIES) {
+    assert.ok(world.palmTreeAssetsStats.speciesDistribution[sp] > 0, `Palm species ${sp} must remain active`);
+  }
+  assert.ok(world.downtownArchitectureStats.skyscraperCount >= 6);
+  assert.equal(world.downtownArchitectureStats.landmarkCount, 1);
+  assert.equal(world.oceanDriveArchitectureStats.hotelCount, 11);
+  assert.equal(world.coralHeightsArchitectureStats.totalCount, 9);
+  assert.equal(world.neonMileArchitectureStats.totalCount, 5);
+  assert.equal(world.industrialHarbourArchitectureStats.warehouseCount, 3);
+
+  // 8. Clean GPU disposal without throwing
+  assert.doesNotThrow(() => world.dispose(), 'world.dispose() must cleanly release all coastal assets');
+});
+
 
 
 
